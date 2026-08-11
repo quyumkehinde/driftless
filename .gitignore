@@ -1,0 +1,15 @@
+# Build artifacts
+/driftless
+/dist/
+coverage.out
+*.test
+
+# OS noise
+.DS_Store
+
+# Local-only spec and planning docs (not published)
+/docs/
+/PLAN.md
+
+# Local config / secrets
+/driftless.yaml
