@@ -1,0 +1,24 @@
+version: 2
+
+project_name: driftless
+
+builds:
+  - main: ./cmd/driftless
+    binary: driftless
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/quyumkehinde/driftless/internal/cli.version={{.Version}}
+      - -X github.com/quyumkehinde/driftless/internal/cli.commit={{.ShortCommit}}
+      - -X github.com/quyumkehinde/driftless/internal/cli.date={{.Date}}
+
+# build only for now; publishing (archives, image, cosign) comes later
+release:
+  disable: true

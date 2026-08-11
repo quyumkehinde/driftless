@@ -31,6 +31,7 @@ func (e *MigrationsPendingError) Error() string {
 	return fmt.Sprintf("%d migration(s) pending; run 'driftless migrate up'", e.Pending)
 }
 
+// ExitCode returns the exit code for pending migrations.
 func (e *MigrationsPendingError) ExitCode() int { return 4 }
 
 // exitCode maps an error returned by cobra to the documented exit code.

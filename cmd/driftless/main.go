@@ -1,3 +1,4 @@
+// Command driftless is the entrypoint for the driftless CLI.
 package main
 
 import (

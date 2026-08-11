@@ -21,7 +21,7 @@ func newVersionCmd() *cobra.Command {
 		Short: "Print the driftless version",
 		Args:  cobra.NoArgs,
 		Run: func(cmd *cobra.Command, _ []string) {
-			fmt.Fprintln(cmd.OutOrStdout(), versionString())
+			cmd.Println(versionString())
 		},
 	}
 }

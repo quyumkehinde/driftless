@@ -1,0 +1,17 @@
+version: "2"
+
+linters:
+  # standard set: errcheck, govet, ineffassign, staticcheck, unused
+  default: standard
+  enable:
+    - misspell
+    - revive
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/quyumkehinde/driftless
