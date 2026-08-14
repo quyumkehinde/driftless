@@ -109,3 +109,220 @@ type DriftlessVerification struct {
 	Repaired   int32
 	Report     []byte
 }
+
+type StripeCharge struct {
+	ID             string
+	Data           []byte
+	Customer       *string
+	Invoice        *string
+	PaymentIntent  *string
+	Status         *string
+	Amount         *int64
+	AmountRefunded *int64
+	Currency       *string
+	Paid           *bool
+	Refunded       *bool
+	Created        *time.Time
+	Livemode       *bool
+	AccountID      *string
+	IsDeleted      bool
+	DeletedAt      *time.Time
+	UpdatedAt      time.Time
+}
+
+type StripeCheckoutSession struct {
+	ID            string
+	Data          []byte
+	Customer      *string
+	Subscription  *string
+	PaymentIntent *string
+	Status        *string
+	Mode          *string
+	AmountTotal   *int64
+	Currency      *string
+	Created       *time.Time
+	Livemode      *bool
+	AccountID     *string
+	IsDeleted     bool
+	DeletedAt     *time.Time
+	UpdatedAt     time.Time
+}
+
+type StripeCustomer struct {
+	ID         string
+	Data       []byte
+	Email      *string
+	Name       *string
+	Created    *time.Time
+	Currency   *string
+	Delinquent *bool
+	Livemode   *bool
+	AccountID  *string
+	IsDeleted  bool
+	DeletedAt  *time.Time
+	UpdatedAt  time.Time
+}
+
+type StripeDispute struct {
+	ID            string
+	Data          []byte
+	Charge        *string
+	PaymentIntent *string
+	Status        *string
+	Amount        *int64
+	Currency      *string
+	Reason        *string
+	EvidenceDueBy *time.Time
+	Created       *time.Time
+	Livemode      *bool
+	AccountID     *string
+	IsDeleted     bool
+	DeletedAt     *time.Time
+	UpdatedAt     time.Time
+}
+
+type StripeInvoice struct {
+	ID           string
+	Data         []byte
+	Customer     *string
+	Subscription *string
+	Status       *string
+	Total        *int64
+	AmountPaid   *int64
+	AmountDue    *int64
+	Currency     *string
+	PeriodStart  *time.Time
+	PeriodEnd    *time.Time
+	Number       *string
+	Created      *time.Time
+	Livemode     *bool
+	AccountID    *string
+	IsDeleted    bool
+	DeletedAt    *time.Time
+	UpdatedAt    time.Time
+}
+
+type StripePaymentIntent struct {
+	ID           string
+	Data         []byte
+	Customer     *string
+	Status       *string
+	Amount       *int64
+	Currency     *string
+	LatestCharge *string
+	Created      *time.Time
+	Livemode     *bool
+	AccountID    *string
+	IsDeleted    bool
+	DeletedAt    *time.Time
+	UpdatedAt    time.Time
+}
+
+type StripePaymentMethod struct {
+	ID        string
+	Data      []byte
+	Customer  *string
+	Type      *string
+	CardBrand *string
+	CardLast4 *string
+	Created   *time.Time
+	Livemode  *bool
+	AccountID *string
+	IsDeleted bool
+	DeletedAt *time.Time
+	UpdatedAt time.Time
+}
+
+type StripePrice struct {
+	ID                string
+	Data              []byte
+	Product           *string
+	Active            *bool
+	Currency          *string
+	UnitAmount        *int64
+	RecurringInterval *string
+	Type              *string
+	Created           *time.Time
+	Livemode          *bool
+	AccountID         *string
+	IsDeleted         bool
+	DeletedAt         *time.Time
+	UpdatedAt         time.Time
+}
+
+type StripeProduct struct {
+	ID        string
+	Data      []byte
+	Name      *string
+	Active    *bool
+	Type      *string
+	Created   *time.Time
+	Livemode  *bool
+	AccountID *string
+	IsDeleted bool
+	DeletedAt *time.Time
+	UpdatedAt time.Time
+}
+
+type StripeRefund struct {
+	ID            string
+	Data          []byte
+	Charge        *string
+	PaymentIntent *string
+	Status        *string
+	Amount        *int64
+	Currency      *string
+	Reason        *string
+	Created       *time.Time
+	Livemode      *bool
+	AccountID     *string
+	IsDeleted     bool
+	DeletedAt     *time.Time
+	UpdatedAt     time.Time
+}
+
+type StripeSetupIntent struct {
+	ID            string
+	Data          []byte
+	Customer      *string
+	Status        *string
+	PaymentMethod *string
+	Created       *time.Time
+	Livemode      *bool
+	AccountID     *string
+	IsDeleted     bool
+	DeletedAt     *time.Time
+	UpdatedAt     time.Time
+}
+
+type StripeSubscription struct {
+	ID                 string
+	Data               []byte
+	Customer           *string
+	Status             *string
+	CancelAtPeriodEnd  *bool
+	CurrentPeriodStart *time.Time
+	CurrentPeriodEnd   *time.Time
+	CanceledAt         *time.Time
+	TrialEnd           *time.Time
+	Created            *time.Time
+	Livemode           *bool
+	AccountID          *string
+	IsDeleted          bool
+	DeletedAt          *time.Time
+	UpdatedAt          time.Time
+}
+
+type StripeSubscriptionItem struct {
+	ID           string
+	Data         []byte
+	Subscription *string
+	Price        *string
+	Quantity     *int64
+	Created      *time.Time
+	Livemode     *bool
+	AccountID    *string
+	IsDeleted    bool
+	DeletedAt    *time.Time
+	UpdatedAt    time.Time
+}

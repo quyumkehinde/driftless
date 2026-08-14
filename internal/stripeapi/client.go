@@ -89,19 +89,19 @@ func NewMetrics(reg *prometheus.Registry, limiter *Limiter) *Metrics {
 
 // objectPaths maps object types to their API collection paths.
 var objectPaths = map[string]string{
-	"customer":          "/v1/customers",
-	"subscription":      "/v1/subscriptions",
-	"subscription_item": "/v1/subscription_items",
-	"product":           "/v1/products",
-	"price":             "/v1/prices",
-	"invoice":           "/v1/invoices",
-	"charge":            "/v1/charges",
-	"payment_intent":    "/v1/payment_intents",
-	"payment_method":    "/v1/payment_methods",
-	"setup_intent":      "/v1/setup_intents",
-	"refund":            "/v1/refunds",
-	"dispute":           "/v1/disputes",
-	"checkout_session":  "/v1/checkout/sessions",
+	ObjectCustomer:         "/v1/customers",
+	ObjectSubscription:     "/v1/subscriptions",
+	ObjectSubscriptionItem: "/v1/subscription_items",
+	ObjectProduct:          "/v1/products",
+	ObjectPrice:            "/v1/prices",
+	ObjectInvoice:          "/v1/invoices",
+	ObjectCharge:           "/v1/charges",
+	ObjectPaymentIntent:    "/v1/payment_intents",
+	ObjectPaymentMethod:    "/v1/payment_methods",
+	ObjectSetupIntent:      "/v1/setup_intents",
+	ObjectRefund:           "/v1/refunds",
+	ObjectDispute:          "/v1/disputes",
+	ObjectCheckoutSession:  "/v1/checkout/sessions",
 }
 
 // Client is the read-only Stripe client. All methods go through the shared

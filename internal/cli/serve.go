@@ -14,11 +14,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/cobra"
 
+	"github.com/quyumkehinde/driftless/internal/apply"
 	"github.com/quyumkehinde/driftless/internal/config"
 	"github.com/quyumkehinde/driftless/internal/ingest"
 	"github.com/quyumkehinde/driftless/internal/obs"
 	"github.com/quyumkehinde/driftless/internal/queue"
 	"github.com/quyumkehinde/driftless/internal/store/migrations"
+	"github.com/quyumkehinde/driftless/internal/stripeapi"
 )
 
 const shutdownTimeout = 10 * time.Second
@@ -76,6 +78,13 @@ func runServe(cmd *cobra.Command, cfg *config.Config, pool *pgxpool.Pool) error 
 	q := queue.New(pool, cfg.Workers.VisibilityTimeout.Std())
 	ingestServer := ingest.NewServer(pool, q, verifier, logger, ingest.NewMetrics(registry))
 
+	limiter := stripeapi.NewLimiter(cfg.Stripe.APIRPS)
+	defer limiter.Stop()
+	client := stripeapi.New(cfg.Stripe.APIBaseURL, cfg.Stripe.APIKey, limiter, stripeapi.NewMetrics(registry, limiter))
+	engine := apply.NewEngine(pool, client, logger, apply.NewMetrics(registry))
+	workers := queue.NewWorkerPool(q, engine, cfg.Workers.Count,
+		250*time.Millisecond, logger, queue.NewMetrics(registry))
+
 	latestMigration, err := migrations.LatestVersion()
 	if err != nil {
 		return err
@@ -102,13 +111,19 @@ func runServe(cmd *cobra.Command, cfg *config.Config, pool *pgxpool.Pool) error 
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	workersDone := make(chan struct{})
+	go func() {
+		workers.Run(ctx)
+		close(workersDone)
+	}()
+
 	errCh := make(chan error, 2)
 	go func() { errCh <- serveListener("ingest", ingestSrv) }()
 	go func() { errCh <- serveListener("metrics", metricsSrv) }()
 	logger.Info("serve started",
 		"ingest_listen", cfg.Server.Listen,
 		"metrics_listen", cfg.Server.MetricsListen,
-		"workers", "disabled until the apply engine lands")
+		"workers", cfg.Workers.Count)
 
 	select {
 	case <-ctx.Done():
@@ -118,13 +133,16 @@ func runServe(cmd *cobra.Command, cfg *config.Config, pool *pgxpool.Pool) error 
 		errShutdown := errors.Join(ingestSrv.Shutdown(shutdownCtx), metricsSrv.Shutdown(shutdownCtx))
 		<-errCh
 		<-errCh
+		<-workersDone
 		return errShutdown
 	case err := <-errCh:
+		stop()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 		_ = ingestSrv.Shutdown(shutdownCtx)
 		_ = metricsSrv.Shutdown(shutdownCtx)
 		<-errCh
+		<-workersDone
 		return err
 	}
 }

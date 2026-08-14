@@ -1,0 +1,81 @@
+package apply
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/quyumkehinde/driftless/internal/stripeapi"
+)
+
+// mirrorTables whitelists the object types the mirror schema stores. Table
+// names are interpolated into SQL, which is safe only because they come
+// from this map and never from input; sqlc cannot parameterize identifiers,
+// and one dynamic statement keeps apply, backfill, and repair on a single
+// upsert code path.
+var mirrorTables = map[string]string{
+	stripeapi.ObjectCustomer:         "stripe.customers",
+	stripeapi.ObjectSubscription:     "stripe.subscriptions",
+	stripeapi.ObjectSubscriptionItem: "stripe.subscription_items",
+	stripeapi.ObjectProduct:          "stripe.products",
+	stripeapi.ObjectPrice:            "stripe.prices",
+	stripeapi.ObjectInvoice:          "stripe.invoices",
+	stripeapi.ObjectCharge:           "stripe.charges",
+	stripeapi.ObjectPaymentIntent:    "stripe.payment_intents",
+	stripeapi.ObjectPaymentMethod:    "stripe.payment_methods",
+	stripeapi.ObjectSetupIntent:      "stripe.setup_intents",
+	stripeapi.ObjectRefund:           "stripe.refunds",
+	stripeapi.ObjectDispute:          "stripe.disputes",
+	stripeapi.ObjectCheckoutSession:  "stripe.checkout_sessions",
+}
+
+// upsertObject writes a freshly fetched object. Last-writer-wins is safe
+// because every writer holds the per-object advisory lock and writes a
+// fresh fetch; a resurrected id also clears the soft-delete flags.
+func upsertObject(ctx context.Context, tx pgx.Tx, objectType, id string, data []byte) error {
+	table, ok := mirrorTables[objectType]
+	if !ok {
+		return fmt.Errorf("apply: no mirror table for object type %q", objectType)
+	}
+	_, err := tx.Exec(ctx, fmt.Sprintf(`
+		INSERT INTO %s (id, data, is_deleted, deleted_at, updated_at)
+		VALUES ($1, $2, false, NULL, now())
+		ON CONFLICT (id) DO UPDATE
+		SET data = EXCLUDED.data,
+		    is_deleted = false,
+		    deleted_at = NULL,
+		    updated_at = now()`, table), id, data)
+	if err != nil {
+		return fmt.Errorf("apply: upsert %s %s: %w", objectType, id, err)
+	}
+	return nil
+}
+
+// softDeleteObject flags an object deleted, keeping the last-known data
+// for auditability. Deleting an id that was never mirrored is a no-op.
+func softDeleteObject(ctx context.Context, tx pgx.Tx, objectType, id string) error {
+	table, ok := mirrorTables[objectType]
+	if !ok {
+		return fmt.Errorf("apply: no mirror table for object type %q", objectType)
+	}
+	_, err := tx.Exec(ctx, fmt.Sprintf(`
+		UPDATE %s SET is_deleted = true, deleted_at = now(), updated_at = now()
+		WHERE id = $1 AND NOT is_deleted`, table), id)
+	if err != nil {
+		return fmt.Errorf("apply: soft delete %s %s: %w", objectType, id, err)
+	}
+	return nil
+}
+
+// notifyChange pokes listeners after a successful write; delivery happens
+// on commit. The payload is deliberately minimal: type and id only.
+func notifyChange(ctx context.Context, tx pgx.Tx, objectType, id string) error {
+	payload, err := json.Marshal(map[string]string{"type": objectType, "id": id})
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `SELECT pg_notify('driftless_changes', $1)`, string(payload))
+	return err
+}

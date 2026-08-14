@@ -34,7 +34,7 @@ func TestKillDuringLoad(t *testing.T) {
 
 	// current serve target, replaced on every restart
 	var mu sync.Mutex
-	proc := startServe(t, binary, connString, "")
+	proc := startServe(t, binary, connString, fs.URL(), "")
 	target := func() string {
 		mu.Lock()
 		defer mu.Unlock()
@@ -49,7 +49,7 @@ func TestKillDuringLoad(t *testing.T) {
 			time.Sleep(duration / time.Duration(kills+1) * time.Duration(i+1))
 			mu.Lock()
 			proc.Kill9(t)
-			proc = startServe(t, binary, connString, "")
+			proc = startServe(t, binary, connString, fs.URL(), "")
 			mu.Unlock()
 		}
 	}()

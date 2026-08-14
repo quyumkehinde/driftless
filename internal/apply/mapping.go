@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/quyumkehinde/driftless/internal/stripeapi"
 )
 
 // Target identifies the one primary object an event pokes. Related objects
@@ -19,41 +21,41 @@ type Target struct {
 // precedence over prefix families: customer.tax_id.created must not resolve
 // through a bare customer prefix, because its data.object is a tax id.
 var exactTypes = map[string]string{
-	"customer.created": "customer",
-	"customer.updated": "customer",
-	"customer.deleted": "customer",
+	"customer.created": stripeapi.ObjectCustomer,
+	"customer.updated": stripeapi.ObjectCustomer,
+	"customer.deleted": stripeapi.ObjectCustomer,
 
-	"product.created": "product",
-	"product.updated": "product",
-	"product.deleted": "product",
+	"product.created": stripeapi.ObjectProduct,
+	"product.updated": stripeapi.ObjectProduct,
+	"product.deleted": stripeapi.ObjectProduct,
 
-	"price.created": "price",
-	"price.updated": "price",
-	"price.deleted": "price",
+	"price.created": stripeapi.ObjectPrice,
+	"price.updated": stripeapi.ObjectPrice,
+	"price.deleted": stripeapi.ObjectPrice,
 
-	"charge.succeeded": "charge",
-	"charge.failed":    "charge",
-	"charge.refunded":  "charge",
-	"charge.updated":   "charge",
-	"charge.captured":  "charge",
-	"charge.expired":   "charge",
+	"charge.succeeded": stripeapi.ObjectCharge,
+	"charge.failed":    stripeapi.ObjectCharge,
+	"charge.refunded":  stripeapi.ObjectCharge,
+	"charge.updated":   stripeapi.ObjectCharge,
+	"charge.captured":  stripeapi.ObjectCharge,
+	"charge.expired":   stripeapi.ObjectCharge,
 
 	// legacy refund event family
-	"charge.refund.updated": "refund",
+	"charge.refund.updated": stripeapi.ObjectRefund,
 
-	"payment_method.attached":              "payment_method",
-	"payment_method.updated":               "payment_method",
-	"payment_method.automatically_updated": "payment_method",
-	"payment_method.detached":              "payment_method",
+	"payment_method.attached":              stripeapi.ObjectPaymentMethod,
+	"payment_method.updated":               stripeapi.ObjectPaymentMethod,
+	"payment_method.automatically_updated": stripeapi.ObjectPaymentMethod,
+	"payment_method.detached":              stripeapi.ObjectPaymentMethod,
 
-	"checkout.session.completed":               "checkout_session",
-	"checkout.session.expired":                 "checkout_session",
-	"checkout.session.async_payment_succeeded": "checkout_session",
-	"checkout.session.async_payment_failed":    "checkout_session",
+	"checkout.session.completed":               stripeapi.ObjectCheckoutSession,
+	"checkout.session.expired":                 stripeapi.ObjectCheckoutSession,
+	"checkout.session.async_payment_succeeded": stripeapi.ObjectCheckoutSession,
+	"checkout.session.async_payment_failed":    stripeapi.ObjectCheckoutSession,
 
-	"refund.created": "refund",
-	"refund.updated": "refund",
-	"refund.failed":  "refund",
+	"refund.created": stripeapi.ObjectRefund,
+	"refund.updated": stripeapi.ObjectRefund,
+	"refund.failed":  stripeapi.ObjectRefund,
 }
 
 // prefixFamilies covers the families the contract defines with a wildcard.
@@ -63,11 +65,11 @@ var prefixFamilies = []struct {
 	prefix     string
 	objectType string
 }{
-	{"customer.subscription.", "subscription"},
-	{"invoice.", "invoice"},
-	{"charge.dispute.", "dispute"},
-	{"payment_intent.", "payment_intent"},
-	{"setup_intent.", "setup_intent"},
+	{"customer.subscription.", stripeapi.ObjectSubscription},
+	{"invoice.", stripeapi.ObjectInvoice},
+	{"charge.dispute.", stripeapi.ObjectDispute},
+	{"payment_intent.", stripeapi.ObjectPaymentIntent},
+	{"setup_intent.", stripeapi.ObjectSetupIntent},
 }
 
 // ResolveType maps an event type to the object type it pokes. ok is false

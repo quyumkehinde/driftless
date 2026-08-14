@@ -41,7 +41,7 @@ func TestCrashBetweenInsertAndAck(t *testing.T) {
 
 			// first delivery: the process dies at the crashpoint, so no
 			// acknowledgment can have been sent
-			proc := startServe(t, binary, connString, tc.point)
+			proc := startServe(t, binary, connString, fs.URL(), tc.point)
 			status, err := fs.TryDeliver(proc.IngestURL, event.ID)
 			if err == nil && status == http.StatusOK {
 				t.Fatal("delivery was acknowledged although the process died")
@@ -61,7 +61,7 @@ func TestCrashBetweenInsertAndAck(t *testing.T) {
 			}
 
 			// Stripe saw no 2xx, so it retries against the restarted process
-			clean := startServe(t, binary, connString, "")
+			clean := startServe(t, binary, connString, fs.URL(), "")
 			statuses := fs.Deliver(t, clean.IngestURL, event.ID)
 			if statuses[0] != http.StatusOK {
 				t.Fatalf("retry status = %d, want 200", statuses[0])

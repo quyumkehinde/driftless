@@ -22,6 +22,7 @@ func TestDefaults(t *testing.T) {
 	got := Defaults()
 	want := Config{
 		Stripe: StripeConfig{
+			APIBaseURL:         "https://api.stripe.com",
 			APIRPS:             25,
 			SignatureTolerance: Duration(300 * time.Second),
 		},

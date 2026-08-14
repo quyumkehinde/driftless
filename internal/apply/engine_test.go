@@ -1,0 +1,320 @@
+package apply
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"reflect"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/quyumkehinde/driftless/internal/fakestripe"
+	"github.com/quyumkehinde/driftless/internal/queue"
+	"github.com/quyumkehinde/driftless/internal/stripeapi"
+	"github.com/quyumkehinde/driftless/internal/testpg"
+)
+
+// newTestEngine wires an engine against fakestripe and a real database.
+func newTestEngine(t *testing.T) (*Engine, *fakestripe.Server, *pgxpool.Pool) {
+	t.Helper()
+	pool := testpg.Start(t)
+	fs := fakestripe.New(t, "whsec_apply")
+	limiter := stripeapi.NewLimiter(1000)
+	t.Cleanup(limiter.Stop)
+	client := stripeapi.New(fs.URL(), "rk_test_apply", limiter, nil)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return NewEngine(pool, client, logger, nil), fs, pool
+}
+
+// jobFor builds the claimed-job shape the worker would hand to Apply.
+func jobFor(objectType, objectID string, event *fakestripe.Event) queue.Job {
+	job := queue.Job{ObjectType: objectType, ObjectID: objectID}
+	if event != nil {
+		job.LatestEventID = &event.ID
+		created := event.Created
+		job.LatestEventCreated = &created
+	}
+	return job
+}
+
+// jsonEqual compares stored JSON with a native object by normalizing both
+// through JSON, so number representations cannot cause false mismatches.
+func jsonEqual(t *testing.T, stored []byte, want map[string]any) bool {
+	t.Helper()
+	wantJSON, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var a, b map[string]any
+	if err := json.Unmarshal(stored, &a); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(wantJSON, &b); err != nil {
+		t.Fatal(err)
+	}
+	return reflect.DeepEqual(a, b)
+}
+
+// insertEvent records the poking event the way ingest would have.
+func insertEvent(t *testing.T, pool *pgxpool.Pool, event fakestripe.Event) {
+	t.Helper()
+	_, err := pool.Exec(context.Background(), `
+		INSERT INTO driftless.events (event_id, type, created, source, payload, livemode)
+		VALUES ($1, $2, $3, 'webhook', $4, false)`,
+		event.ID, event.Type, event.Created, event.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestApplyFetchesAndMirrors(t *testing.T) {
+	engine, fs, pool := newTestEngine(t)
+	ctx := context.Background()
+
+	event := fs.Put("customer", "cus_1", map[string]any{
+		"email": "mirror@x.y", "created": 1735689600, "livemode": false,
+	}, "customer.created")
+	insertEvent(t, pool, event)
+
+	if err := engine.Apply(ctx, jobFor("customer", "cus_1", &event)); err != nil {
+		t.Fatal(err)
+	}
+
+	// the mirror row matches fakestripe's own store
+	var data []byte
+	var email string
+	var isDeleted bool
+	err := pool.QueryRow(ctx,
+		`SELECT data, email, is_deleted FROM stripe.customers WHERE id = 'cus_1'`).
+		Scan(&data, &email, &isDeleted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := fs.Object("customer", "cus_1")
+	if !jsonEqual(t, data, want) {
+		t.Errorf("mirrored data = %s, want %v", data, want)
+	}
+	if email != "mirror@x.y" || isDeleted {
+		t.Errorf("email=%q is_deleted=%v", email, isDeleted)
+	}
+
+	// bookkeeping: object_state and processed_at
+	var syncSource string
+	var lastEventID string
+	err = pool.QueryRow(ctx,
+		`SELECT sync_source, last_event_id FROM driftless.object_state WHERE object_type='customer' AND object_id='cus_1'`).
+		Scan(&syncSource, &lastEventID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if syncSource != "fetch" || lastEventID != event.ID {
+		t.Errorf("object_state: sync_source=%q last_event_id=%q", syncSource, lastEventID)
+	}
+	var processed *time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT processed_at FROM driftless.events WHERE event_id = $1`, event.ID).Scan(&processed); err != nil {
+		t.Fatal(err)
+	}
+	if processed == nil {
+		t.Error("event not marked processed")
+	}
+}
+
+func TestApplyIsIdempotent(t *testing.T) {
+	engine, fs, pool := newTestEngine(t)
+	ctx := context.Background()
+
+	event := fs.Put("customer", "cus_i", map[string]any{"email": "i@x.y"}, "customer.created")
+	insertEvent(t, pool, event)
+	job := jobFor("customer", "cus_i", &event)
+
+	if err := engine.Apply(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	var firstData []byte
+	var firstUpdated time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT data, updated_at FROM stripe.customers WHERE id = 'cus_i'`).Scan(&firstData, &firstUpdated); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	if err := engine.Apply(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	var secondData []byte
+	var secondUpdated time.Time
+	var count int
+	if err := pool.QueryRow(ctx,
+		`SELECT data, updated_at, (SELECT count(*) FROM stripe.customers) FROM stripe.customers WHERE id = 'cus_i'`).
+		Scan(&secondData, &secondUpdated, &count); err != nil {
+		t.Fatal(err)
+	}
+	if string(firstData) != string(secondData) {
+		t.Error("re-apply changed data")
+	}
+	if !secondUpdated.After(firstUpdated) {
+		t.Error("re-apply should refresh updated_at")
+	}
+	if count != 1 {
+		t.Errorf("rows = %d, want 1", count)
+	}
+}
+
+func TestApply404SoftDeletes(t *testing.T) {
+	engine, fs, pool := newTestEngine(t)
+	ctx := context.Background()
+
+	event := fs.Put("product", "prod_x", map[string]any{"name": "Gone"}, "product.created")
+	insertEvent(t, pool, event)
+	if err := engine.Apply(ctx, jobFor("product", "prod_x", &event)); err != nil {
+		t.Fatal(err)
+	}
+
+	// object vanishes upstream without a deleted event reaching us
+	fs.Delete("product", "prod_x", "product.deleted")
+	if err := engine.Apply(ctx, jobFor("product", "prod_x", nil)); err != nil {
+		t.Fatal(err)
+	}
+
+	var isDeleted bool
+	var name string
+	err := pool.QueryRow(ctx,
+		`SELECT is_deleted, name FROM stripe.products WHERE id = 'prod_x'`).Scan(&isDeleted, &name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isDeleted || name != "Gone" {
+		t.Errorf("is_deleted=%v name=%q: soft delete must keep last data", isDeleted, name)
+	}
+}
+
+func TestApplyDeletedEventSkipsFetch(t *testing.T) {
+	engine, fs, pool := newTestEngine(t)
+	ctx := context.Background()
+
+	created := fs.Put("customer", "cus_del", map[string]any{"email": "d@x.y"}, "customer.created")
+	insertEvent(t, pool, created)
+	if err := engine.Apply(ctx, jobFor("customer", "cus_del", &created)); err != nil {
+		t.Fatal(err)
+	}
+
+	// craft a deleted event while the object is STILL fetchable upstream:
+	// if the row ends up soft-deleted, the shortcut was taken, no fetch
+	tombstone := fakestripe.Event{
+		ID: "evt_crafted_deleted", Type: "customer.deleted",
+		Created: time.Now().UTC().Truncate(time.Second),
+		Payload: []byte(`{"id":"evt_crafted_deleted","type":"customer.deleted","created":1735700000,"livemode":false,"data":{"object":{"id":"cus_del","object":"customer","deleted":true}}}`),
+	}
+	insertEvent(t, pool, tombstone)
+	if err := engine.Apply(ctx, jobFor("customer", "cus_del", &tombstone)); err != nil {
+		t.Fatal(err)
+	}
+
+	var isDeleted bool
+	if err := pool.QueryRow(ctx,
+		`SELECT is_deleted FROM stripe.customers WHERE id = 'cus_del'`).Scan(&isDeleted); err != nil {
+		t.Fatal(err)
+	}
+	if !isDeleted {
+		t.Error("deleted event must soft-delete without fetching")
+	}
+}
+
+func TestApplyCancellationEventStillFetches(t *testing.T) {
+	engine, fs, pool := newTestEngine(t)
+	ctx := context.Background()
+
+	// subscription "deleted" means canceled: the object stays fetchable
+	// and its fetched status is the truth
+	event := fs.Put("subscription", "sub_c", map[string]any{
+		"customer": "cus_1", "status": "canceled",
+		"items": map[string]any{"data": []any{}, "has_more": false},
+	}, "customer.subscription.deleted")
+	insertEvent(t, pool, event)
+
+	if err := engine.Apply(ctx, jobFor("subscription", "sub_c", &event)); err != nil {
+		t.Fatal(err)
+	}
+
+	var status string
+	var isDeleted bool
+	err := pool.QueryRow(ctx,
+		`SELECT status, is_deleted FROM stripe.subscriptions WHERE id = 'sub_c'`).Scan(&status, &isDeleted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != "canceled" || isDeleted {
+		t.Errorf("status=%q is_deleted=%v: canceled subscriptions stay visible", status, isDeleted)
+	}
+}
+
+func TestApplyNotifiesListeners(t *testing.T) {
+	engine, fs, pool := newTestEngine(t)
+	ctx := context.Background()
+
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `LISTEN driftless_changes`); err != nil {
+		t.Fatal(err)
+	}
+
+	event := fs.Put("customer", "cus_n", map[string]any{"email": "n@x.y"}, "customer.created")
+	insertEvent(t, pool, event)
+	if err := engine.Apply(ctx, jobFor("customer", "cus_n", &event)); err != nil {
+		t.Fatal(err)
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	notification, err := conn.Conn().WaitForNotification(waitCtx)
+	if err != nil {
+		t.Fatalf("no notification: %v", err)
+	}
+	if notification.Payload != `{"id":"cus_n","type":"customer"}` {
+		t.Errorf("payload = %s", notification.Payload)
+	}
+}
+
+func TestApplyConcurrentSameObject(t *testing.T) {
+	engine, fs, pool := newTestEngine(t)
+	ctx := context.Background()
+
+	event := fs.Put("customer", "cus_race", map[string]any{"email": "race@x.y"}, "customer.created")
+	insertEvent(t, pool, event)
+	job := jobFor("customer", "cus_race", &event)
+
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := engine.Apply(ctx, job); err != nil {
+				t.Errorf("concurrent apply: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	var count int
+	var data []byte
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*), min(data::text)::jsonb FROM stripe.customers WHERE id = 'cus_race'`).
+		Scan(&count, &data); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("rows = %d, want 1", count)
+	}
+	want, _ := fs.Object("customer", "cus_race")
+	if !jsonEqual(t, data, want) {
+		t.Errorf("final state diverged from upstream: %s vs %v", data, want)
+	}
+}

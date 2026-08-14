@@ -6,23 +6,25 @@ import (
 	"slices"
 	"strconv"
 	"time"
+
+	"github.com/quyumkehinde/driftless/internal/stripeapi"
 )
 
 // pluralPaths maps URL segments to object types. Checkout sessions live
 // under a two-segment path and are routed explicitly.
 var pluralPaths = map[string]string{
-	"customers":          "customer",
-	"subscriptions":      "subscription",
-	"subscription_items": "subscription_item",
-	"products":           "product",
-	"prices":             "price",
-	"invoices":           "invoice",
-	"charges":            "charge",
-	"payment_intents":    "payment_intent",
-	"payment_methods":    "payment_method",
-	"setup_intents":      "setup_intent",
-	"refunds":            "refund",
-	"disputes":           "dispute",
+	"customers":          stripeapi.ObjectCustomer,
+	"subscriptions":      stripeapi.ObjectSubscription,
+	"subscription_items": stripeapi.ObjectSubscriptionItem,
+	"products":           stripeapi.ObjectProduct,
+	"prices":             stripeapi.ObjectPrice,
+	"invoices":           stripeapi.ObjectInvoice,
+	"charges":            stripeapi.ObjectCharge,
+	"payment_intents":    stripeapi.ObjectPaymentIntent,
+	"payment_methods":    stripeapi.ObjectPaymentMethod,
+	"setup_intents":      stripeapi.ObjectSetupIntent,
+	"refunds":            stripeapi.ObjectRefund,
+	"disputes":           stripeapi.ObjectDispute,
 }
 
 const defaultPageLimit = 10
@@ -32,10 +34,10 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc("GET /v1/account", s.handleAccount)
 	mux.HandleFunc("GET /v1/events", s.handleEvents)
 	mux.HandleFunc("GET /v1/checkout/sessions", func(w http.ResponseWriter, r *http.Request) {
-		s.handleList(w, r, "checkout_session")
+		s.handleList(w, r, stripeapi.ObjectCheckoutSession)
 	})
 	mux.HandleFunc("GET /v1/checkout/sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
-		s.handleGet(w, "checkout_session", r.PathValue("id"))
+		s.handleGet(w, stripeapi.ObjectCheckoutSession, r.PathValue("id"))
 	})
 	mux.HandleFunc("GET /v1/{plural}", func(w http.ResponseWriter, r *http.Request) {
 		objectType, ok := pluralPaths[r.PathValue("plural")]
@@ -69,15 +71,29 @@ func (s *Server) handleGet(w http.ResponseWriter, objectType, id string) {
 	writeJSON(w, obj)
 }
 
+// listFilterKeys are the query filters Stripe supports on the collections
+// driftless lists; a set filter keeps objects whose field matches.
+var listFilterKeys = []string{"subscription", "customer"}
+
 // handleList serves cursor pagination the way Stripe does: insertion order
-// reversed (newest first), limit, starting_after.
+// reversed (newest first), limit, starting_after, and field filters.
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request, objectType string) {
 	s.mu.Lock()
 	ids := slices.Clone(s.order[objectType])
 	objs := make([]map[string]any, 0, len(ids))
 	slices.Reverse(ids)
 	for _, id := range ids {
-		objs = append(objs, s.objects[objectType][id])
+		obj := s.objects[objectType][id]
+		matched := true
+		for _, key := range listFilterKeys {
+			if want := r.URL.Query().Get(key); want != "" && obj[key] != want {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			objs = append(objs, obj)
+		}
 	}
 	s.mu.Unlock()
 

@@ -71,7 +71,7 @@ type serveProc struct {
 
 // startServe launches the binary against the given database, optionally
 // with a crashpoint armed, and waits until it serves /healthz.
-func startServe(t *testing.T, binary, connString, crashpointName string) *serveProc {
+func startServe(t *testing.T, binary, connString, apiBaseURL, crashpointName string) *serveProc {
 	t.Helper()
 	ingestAddr := freeAddr(t)
 	metricsAddr := freeAddr(t)
@@ -84,6 +84,7 @@ func startServe(t *testing.T, binary, connString, crashpointName string) *serveP
 		"DRIFTLESS_STRIPE_WEBHOOK_SECRET="+e2eSecret,
 		"DRIFTLESS_SERVER_LISTEN="+ingestAddr,
 		"DRIFTLESS_SERVER_METRICS_LISTEN="+metricsAddr,
+		"DRIFTLESS_STRIPE_API_BASE_URL="+apiBaseURL,
 		"DRIFTLESS_LOG_LEVEL=warn",
 		"DRIFTLESS_LOG_FORMAT=text",
 	)

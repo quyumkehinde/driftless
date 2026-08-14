@@ -21,6 +21,7 @@ var envTable = []envEntry{
 	{"DRIFTLESS_STRIPE_API_KEY", setString(func(c *Config) *string { return &c.Stripe.APIKey })},
 	{"DRIFTLESS_STRIPE_WEBHOOK_SECRET", setString(func(c *Config) *string { return &c.Stripe.WebhookSecret })},
 	{"DRIFTLESS_STRIPE_WEBHOOK_SECRET_SECONDARY", setString(func(c *Config) *string { return &c.Stripe.WebhookSecretSecondary })},
+	{"DRIFTLESS_STRIPE_API_BASE_URL", setString(func(c *Config) *string { return &c.Stripe.APIBaseURL })},
 	{"DRIFTLESS_STRIPE_API_RPS", setInt(func(c *Config) *int { return &c.Stripe.APIRPS })},
 	{"DRIFTLESS_STRIPE_SIGNATURE_TOLERANCE", setDuration(func(c *Config) *Duration { return &c.Stripe.SignatureTolerance })},
 

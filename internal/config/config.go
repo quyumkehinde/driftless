@@ -34,6 +34,7 @@ type StripeConfig struct {
 	APIKey                 string   `yaml:"api_key"`
 	WebhookSecret          string   `yaml:"webhook_secret"`
 	WebhookSecretSecondary string   `yaml:"webhook_secret_secondary"`
+	APIBaseURL             string   `yaml:"api_base_url"`
 	APIRPS                 int      `yaml:"api_rps"`
 	SignatureTolerance     Duration `yaml:"signature_tolerance"`
 }
@@ -90,6 +91,7 @@ type LogConfig struct {
 func Defaults() Config {
 	return Config{
 		Stripe: StripeConfig{
+			APIBaseURL:         "https://api.stripe.com",
 			APIRPS:             25,
 			SignatureTolerance: Duration(300 * time.Second),
 		},

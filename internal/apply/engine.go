@@ -1,0 +1,172 @@
+package apply
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/quyumkehinde/driftless/internal/queue"
+	"github.com/quyumkehinde/driftless/internal/store/db"
+	"github.com/quyumkehinde/driftless/internal/stripeapi"
+)
+
+// Metrics holds the apply engine's prometheus instruments.
+type Metrics struct {
+	ApplySeconds *prometheus.HistogramVec
+}
+
+// NewMetrics registers the apply metric families on reg.
+func NewMetrics(reg *prometheus.Registry) *Metrics {
+	m := &Metrics{
+		ApplySeconds: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "driftless_apply_seconds",
+			Help:    "Time to apply one job.",
+			Buckets: prometheus.ExponentialBuckets(0.01, 2, 10),
+		}, []string{"mode"}),
+	}
+	reg.MustRegister(m.ApplySeconds)
+	return m
+}
+
+// Engine applies claimed jobs: it fetches the object fresh from Stripe and
+// materializes it into the mirror schema under the per-object advisory
+// lock. It implements queue.Applier.
+type Engine struct {
+	pool    *pgxpool.Pool
+	client  *stripeapi.Client
+	logger  *slog.Logger
+	metrics *Metrics
+}
+
+// NewEngine wires the apply engine. metrics may be nil.
+func NewEngine(pool *pgxpool.Pool, client *stripeapi.Client, logger *slog.Logger, metrics *Metrics) *Engine {
+	return &Engine{
+		pool:    pool,
+		client:  client,
+		logger:  logger.With("component", "apply"),
+		metrics: metrics,
+	}
+}
+
+// Apply materializes one job's object. Everything happens in a single
+// transaction holding the advisory lock: fetch, upsert, bookkeeping, and
+// marking the poking event processed. A crash rolls all of it back and the
+// job re-runs idempotently.
+func (e *Engine) Apply(ctx context.Context, job queue.Job) error {
+	start := time.Now()
+	err := pgx.BeginFunc(ctx, e.pool, func(tx pgx.Tx) error {
+		if err := acquireObjectLock(ctx, tx, job.ObjectType, job.ObjectID); err != nil {
+			return err
+		}
+		return e.applyLocked(ctx, tx, job)
+	})
+	if e.metrics != nil {
+		e.metrics.ApplySeconds.WithLabelValues("fetch").Observe(time.Since(start).Seconds())
+	}
+	return err
+}
+
+// acquireObjectLock serializes concurrent applies to one object across all
+// processes sharing the database.
+func acquireObjectLock(ctx context.Context, tx pgx.Tx, objectType, objectID string) error {
+	_, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, objectType+":"+objectID)
+	return err
+}
+
+func (e *Engine) applyLocked(ctx context.Context, tx pgx.Tx, job queue.Job) error {
+	q := db.New(tx)
+
+	// A deleted-object event means the fetch would 404: soft-delete
+	// directly. Detected from the event payload's deleted flag, because
+	// some deleted-family events (subscription cancellation) leave the
+	// object fetchable and those must fetch normally.
+	if job.LatestEventID != nil {
+		event, err := q.GetEventForApply(ctx, *job.LatestEventID)
+		if err == nil && eventMarksDeleted(event.Payload) {
+			return e.finishSoftDelete(ctx, tx, job)
+		}
+	}
+
+	raw, err := e.client.GetObject(ctx, stripeapi.PriorityWebhook, job.ObjectType, job.ObjectID)
+	var notFound *stripeapi.NotFoundError
+	if errors.As(err, &notFound) {
+		// The object is gone upstream: the truth is a soft delete.
+		return e.finishSoftDelete(ctx, tx, job)
+	}
+	if err != nil {
+		// Outside the doomed transaction, count the failure for status.
+		if _, bumpErr := db.New(e.pool).BumpFetchFailures(ctx, db.BumpFetchFailuresParams{
+			ObjectType: job.ObjectType, ObjectID: job.ObjectID,
+		}); bumpErr != nil {
+			e.logger.Warn("recording fetch failure failed", "error", bumpErr)
+		}
+		return err
+	}
+
+	if job.ObjectType == stripeapi.ObjectSubscription {
+		if err := e.upsertSubscription(ctx, tx, job.ObjectID, raw); err != nil {
+			return err
+		}
+	} else if err := upsertObject(ctx, tx, job.ObjectType, job.ObjectID, raw); err != nil {
+		return err
+	}
+	return e.finishApplied(ctx, tx, job)
+}
+
+// finishApplied records bookkeeping for a successful upsert.
+func (e *Engine) finishApplied(ctx context.Context, tx pgx.Tx, job queue.Job) error {
+	if err := e.recordState(ctx, tx, job); err != nil {
+		return err
+	}
+	return notifyChange(ctx, tx, job.ObjectType, job.ObjectID)
+}
+
+// finishSoftDelete soft-deletes the object and records bookkeeping.
+func (e *Engine) finishSoftDelete(ctx context.Context, tx pgx.Tx, job queue.Job) error {
+	if err := softDeleteObject(ctx, tx, job.ObjectType, job.ObjectID); err != nil {
+		return err
+	}
+	return e.finishApplied(ctx, tx, job)
+}
+
+func (e *Engine) recordState(ctx context.Context, tx pgx.Tx, job queue.Job) error {
+	q := db.New(tx)
+	if err := q.UpsertObjectState(ctx, db.UpsertObjectStateParams{
+		ObjectType:       job.ObjectType,
+		ObjectID:         job.ObjectID,
+		LastEventCreated: job.LatestEventCreated,
+		LastEventID:      job.LatestEventID,
+		SyncSource:       "fetch",
+	}); err != nil {
+		return err
+	}
+	if job.LatestEventID != nil {
+		if err := q.MarkEventProcessed(ctx, *job.LatestEventID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// eventMarksDeleted reports whether the event payload's data.object carries
+// deleted: true, the marker Stripe sets only on genuinely deleted objects.
+func eventMarksDeleted(payload []byte) bool {
+	var envelope struct {
+		Data struct {
+			Object struct {
+				Deleted bool `json:"deleted"`
+			} `json:"object"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		return false
+	}
+	return envelope.Data.Object.Deleted
+}
