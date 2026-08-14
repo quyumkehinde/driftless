@@ -20,6 +20,14 @@ import (
 // containers must skip under -short.
 func Start(t *testing.T) *pgxpool.Pool {
 	t.Helper()
+	pool, _ := StartWithURL(t)
+	return pool
+}
+
+// StartWithURL is Start plus the connection string, for tests that hand the
+// database to a subprocess or the CLI.
+func StartWithURL(t *testing.T) (*pgxpool.Pool, string) {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("skipping container test in short mode")
 	}
@@ -61,5 +69,5 @@ func Start(t *testing.T) *pgxpool.Pool {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	return pool
+	return pool, connStr
 }
