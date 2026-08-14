@@ -81,7 +81,7 @@ func runServe(cmd *cobra.Command, cfg *config.Config, pool *pgxpool.Pool) error 
 	limiter := stripeapi.NewLimiter(cfg.Stripe.APIRPS)
 	defer limiter.Stop()
 	client := stripeapi.New(cfg.Stripe.APIBaseURL, cfg.Stripe.APIKey, limiter, stripeapi.NewMetrics(registry, limiter))
-	engine := apply.NewEngine(pool, client, logger, apply.NewMetrics(registry))
+	engine := apply.NewEngine(pool, client, cfg.Apply.PayloadModeTypes, logger, apply.NewMetrics(registry))
 	workers := queue.NewWorkerPool(q, engine, cfg.Workers.Count,
 		250*time.Millisecond, logger, queue.NewMetrics(registry))
 

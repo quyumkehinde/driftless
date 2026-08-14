@@ -16,6 +16,16 @@ import (
 	"github.com/quyumkehinde/driftless/internal/stripeapi"
 )
 
+// The object_state.sync_source values; fetch and payload double as the
+// apply-mode metric label. Backfill and repair are written by their own
+// packages in later milestones.
+const (
+	SyncSourceFetch    = "fetch"
+	SyncSourcePayload  = "payload"
+	SyncSourceBackfill = "backfill"
+	SyncSourceRepair   = "repair"
+)
+
 // Metrics holds the apply engine's prometheus instruments.
 type Metrics struct {
 	ApplySeconds *prometheus.HistogramVec
@@ -36,21 +46,30 @@ func NewMetrics(reg *prometheus.Registry) *Metrics {
 
 // Engine applies claimed jobs: it fetches the object fresh from Stripe and
 // materializes it into the mirror schema under the per-object advisory
-// lock. It implements queue.Applier.
+// lock. Object types opted into payload mode apply the event's own
+// data.object under the ordering guard instead. It implements
+// queue.Applier.
 type Engine struct {
-	pool    *pgxpool.Pool
-	client  *stripeapi.Client
-	logger  *slog.Logger
-	metrics *Metrics
+	pool        *pgxpool.Pool
+	client      *stripeapi.Client
+	payloadMode map[string]bool
+	logger      *slog.Logger
+	metrics     *Metrics
 }
 
-// NewEngine wires the apply engine. metrics may be nil.
-func NewEngine(pool *pgxpool.Pool, client *stripeapi.Client, logger *slog.Logger, metrics *Metrics) *Engine {
+// NewEngine wires the apply engine. payloadModeTypes lists the object
+// types that apply from event payloads; metrics may be nil.
+func NewEngine(pool *pgxpool.Pool, client *stripeapi.Client, payloadModeTypes []string, logger *slog.Logger, metrics *Metrics) *Engine {
+	payloadMode := make(map[string]bool, len(payloadModeTypes))
+	for _, objectType := range payloadModeTypes {
+		payloadMode[objectType] = true
+	}
 	return &Engine{
-		pool:    pool,
-		client:  client,
-		logger:  logger.With("component", "apply"),
-		metrics: metrics,
+		pool:        pool,
+		client:      client,
+		payloadMode: payloadMode,
+		logger:      logger.With("component", "apply"),
+		metrics:     metrics,
 	}
 }
 
@@ -60,6 +79,10 @@ func NewEngine(pool *pgxpool.Pool, client *stripeapi.Client, logger *slog.Logger
 // job re-runs idempotently.
 func (e *Engine) Apply(ctx context.Context, job queue.Job) error {
 	start := time.Now()
+	mode := SyncSourceFetch
+	if e.payloadMode[job.ObjectType] {
+		mode = SyncSourcePayload
+	}
 	err := pgx.BeginFunc(ctx, e.pool, func(tx pgx.Tx) error {
 		if err := acquireObjectLock(ctx, tx, job.ObjectType, job.ObjectID); err != nil {
 			return err
@@ -67,7 +90,7 @@ func (e *Engine) Apply(ctx context.Context, job queue.Job) error {
 		return e.applyLocked(ctx, tx, job)
 	})
 	if e.metrics != nil {
-		e.metrics.ApplySeconds.WithLabelValues("fetch").Observe(time.Since(start).Seconds())
+		e.metrics.ApplySeconds.WithLabelValues(mode).Observe(time.Since(start).Seconds())
 	}
 	return err
 }
@@ -83,15 +106,23 @@ func acquireObjectLock(ctx context.Context, tx pgx.Tx, objectType, objectID stri
 func (e *Engine) applyLocked(ctx context.Context, tx pgx.Tx, job queue.Job) error {
 	q := db.New(tx)
 
+	var eventPayload []byte
+	if job.LatestEventID != nil {
+		if event, err := q.GetEventForApply(ctx, *job.LatestEventID); err == nil {
+			eventPayload = event.Payload
+		}
+	}
+
 	// A deleted-object event means the fetch would 404: soft-delete
 	// directly. Detected from the event payload's deleted flag, because
 	// some deleted-family events (subscription cancellation) leave the
 	// object fetchable and those must fetch normally.
-	if job.LatestEventID != nil {
-		event, err := q.GetEventForApply(ctx, *job.LatestEventID)
-		if err == nil && eventMarksDeleted(event.Payload) {
-			return e.finishSoftDelete(ctx, tx, job)
-		}
+	if eventMarksDeleted(eventPayload) {
+		return e.finishSoftDelete(ctx, tx, job)
+	}
+
+	if e.payloadMode[job.ObjectType] && eventPayload != nil {
+		return e.applyPayload(ctx, tx, job, eventPayload)
 	}
 
 	raw, err := e.client.GetObject(ctx, stripeapi.PriorityWebhook, job.ObjectType, job.ObjectID)
@@ -117,12 +148,12 @@ func (e *Engine) applyLocked(ctx context.Context, tx pgx.Tx, job queue.Job) erro
 	} else if err := upsertObject(ctx, tx, job.ObjectType, job.ObjectID, raw); err != nil {
 		return err
 	}
-	return e.finishApplied(ctx, tx, job)
+	return e.finishApplied(ctx, tx, job, SyncSourceFetch)
 }
 
 // finishApplied records bookkeeping for a successful upsert.
-func (e *Engine) finishApplied(ctx context.Context, tx pgx.Tx, job queue.Job) error {
-	if err := e.recordState(ctx, tx, job); err != nil {
+func (e *Engine) finishApplied(ctx context.Context, tx pgx.Tx, job queue.Job, syncSource string) error {
+	if err := e.recordState(ctx, tx, job, syncSource); err != nil {
 		return err
 	}
 	return notifyChange(ctx, tx, job.ObjectType, job.ObjectID)
@@ -133,17 +164,17 @@ func (e *Engine) finishSoftDelete(ctx context.Context, tx pgx.Tx, job queue.Job)
 	if err := softDeleteObject(ctx, tx, job.ObjectType, job.ObjectID); err != nil {
 		return err
 	}
-	return e.finishApplied(ctx, tx, job)
+	return e.finishApplied(ctx, tx, job, SyncSourceFetch)
 }
 
-func (e *Engine) recordState(ctx context.Context, tx pgx.Tx, job queue.Job) error {
+func (e *Engine) recordState(ctx context.Context, tx pgx.Tx, job queue.Job, syncSource string) error {
 	q := db.New(tx)
 	if err := q.UpsertObjectState(ctx, db.UpsertObjectStateParams{
 		ObjectType:       job.ObjectType,
 		ObjectID:         job.ObjectID,
 		LastEventCreated: job.LatestEventCreated,
 		LastEventID:      job.LatestEventID,
-		SyncSource:       "fetch",
+		SyncSource:       syncSource,
 	}); err != nil {
 		return err
 	}
@@ -158,6 +189,9 @@ func (e *Engine) recordState(ctx context.Context, tx pgx.Tx, job queue.Job) erro
 // eventMarksDeleted reports whether the event payload's data.object carries
 // deleted: true, the marker Stripe sets only on genuinely deleted objects.
 func eventMarksDeleted(payload []byte) bool {
+	if payload == nil {
+		return false
+	}
 	var envelope struct {
 		Data struct {
 			Object struct {

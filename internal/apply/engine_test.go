@@ -27,7 +27,19 @@ func newTestEngine(t *testing.T) (*Engine, *fakestripe.Server, *pgxpool.Pool) {
 	t.Cleanup(limiter.Stop)
 	client := stripeapi.New(fs.URL(), "rk_test_apply", limiter, nil)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewEngine(pool, client, logger, nil), fs, pool
+	return NewEngine(pool, client, nil, logger, nil), fs, pool
+}
+
+// newPayloadEngine is newTestEngine with payload mode for the given types.
+func newPayloadEngine(t *testing.T, payloadTypes ...string) (*Engine, *fakestripe.Server, *pgxpool.Pool) {
+	t.Helper()
+	pool := testpg.Start(t)
+	fs := fakestripe.New(t, "whsec_apply")
+	limiter := stripeapi.NewLimiter(1000)
+	t.Cleanup(limiter.Stop)
+	client := stripeapi.New(fs.URL(), "rk_test_apply", limiter, nil)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return NewEngine(pool, client, payloadTypes, logger, nil), fs, pool
 }
 
 // jobFor builds the claimed-job shape the worker would hand to Apply.
