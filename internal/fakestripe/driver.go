@@ -86,21 +86,70 @@ func (s *Server) DeliverAll(t *testing.T, target string, outOfOrder bool) []stri
 	return ids
 }
 
+// TryDeliver delivers one event and reports transport failures as errors
+// instead of failing the test. Chaos tests use it when the receiver is
+// expected to die mid-request.
+func (s *Server) TryDeliver(target, eventID string) (int, error) {
+	event, ok := s.Event(eventID)
+	if !ok {
+		return 0, fmt.Errorf("fakestripe: no event %s", eventID)
+	}
+	return s.tryPost(target, event, s.secret)
+}
+
+// DeliverConcurrent delivers the same event n times at once, the dedup-race
+// shape, and returns every status.
+func (s *Server) DeliverConcurrent(t *testing.T, target, eventID string, n int) []int {
+	t.Helper()
+	type result struct {
+		status int
+		err    error
+	}
+	results := make(chan result, n)
+	start := make(chan struct{})
+	for range n {
+		go func() {
+			<-start
+			status, err := s.TryDeliver(target, eventID)
+			results <- result{status, err}
+		}()
+	}
+	close(start)
+
+	statuses := make([]int, 0, n)
+	for range n {
+		r := <-results
+		if r.err != nil {
+			t.Fatalf("fakestripe: concurrent delivery: %v", r.err)
+		}
+		statuses = append(statuses, r.status)
+	}
+	return statuses
+}
+
 func (s *Server) post(t *testing.T, target string, event Event, secret string) int {
 	t.Helper()
+	status, err := s.tryPost(target, event, secret)
+	if err != nil {
+		t.Fatalf("fakestripe: delivering %s: %v", event.ID, err)
+	}
+	return status
+}
+
+func (s *Server) tryPost(target string, event Event, secret string) (int, error) {
 	req, err := http.NewRequest(http.MethodPost, target+"/webhooks/stripe", bytes.NewReader(event.Payload))
 	if err != nil {
-		t.Fatal(err)
+		return 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Stripe-Signature", signHeader(secret, time.Now(), event.Payload))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("fakestripe: delivering %s: %v", event.ID, err)
+		return 0, err
 	}
 	_ = resp.Body.Close()
-	return resp.StatusCode
+	return resp.StatusCode, nil
 }
 
 // signHeader produces the Stripe-Signature header. The ingest package's

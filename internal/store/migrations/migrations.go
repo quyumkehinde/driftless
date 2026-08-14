@@ -7,6 +7,9 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/pressly/goose/v3"
@@ -75,6 +78,29 @@ func StatusList(ctx context.Context, db *sql.DB) ([]Status, error) {
 		out = append(out, st)
 	}
 	return out, nil
+}
+
+// LatestVersion returns the highest embedded migration version, so a
+// readiness check can compare it against the version table without goose.
+func LatestVersion() (int64, error) {
+	entries, err := embedded.ReadDir(".")
+	if err != nil {
+		return 0, err
+	}
+	var latest int64
+	for _, entry := range entries {
+		name := entry.Name()
+		prefix, _, found := strings.Cut(name, "_")
+		if !found {
+			continue
+		}
+		version, err := strconv.ParseInt(prefix, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("migration file %s has no numeric version", name)
+		}
+		latest = max(latest, version)
+	}
+	return latest, nil
 }
 
 // Pending returns how many migrations have not been applied yet.

@@ -13,6 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/quyumkehinde/driftless/internal/apply"
+	"github.com/quyumkehinde/driftless/internal/crashpoint"
 	"github.com/quyumkehinde/driftless/internal/obs"
 	"github.com/quyumkehinde/driftless/internal/queue"
 	"github.com/quyumkehinde/driftless/internal/store/db"
@@ -146,6 +147,7 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	} else {
 		s.count("duplicate")
 	}
+	crashpoint.Maybe("ingest.after-commit")
 	// The transaction is committed: acknowledging is now safe.
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -190,13 +192,16 @@ func (s *Server) record(r *http.Request, event eventEnvelope, body []byte) (inse
 			s.logger.Warn("mapped event has no data.object.id", "event_id", event.ID, "type", event.Type)
 			return nil
 		}
-		_, _, err = s.queue.Enqueue(ctx, tx, queue.EnqueueParams{
+		if _, _, err := s.queue.Enqueue(ctx, tx, queue.EnqueueParams{
 			ObjectType:   objectType,
 			ObjectID:     event.Data.Object.ID,
 			EventID:      event.ID,
 			EventCreated: time.Unix(event.Created, 0).UTC(),
-		})
-		return err
+		}); err != nil {
+			return err
+		}
+		crashpoint.Maybe("ingest.before-commit")
+		return nil
 	})
 	return inserted, err
 }
