@@ -144,20 +144,58 @@ func (r *Runner) Start(ctx context.Context, opts Options) (int64, error) {
 	return run.ID, r.execute(ctx, run.ID, opts.Since)
 }
 
-// Resume continues a crashed or interrupted run from its cursors.
+// ErrRunLocked reports that another process is already driving the run.
+var ErrRunLocked = errors.New("backfill: run is already being driven by another process")
+
+// Resume continues a crashed, interrupted, or deliberately cancelled run
+// from its cursors. Cancelled runs resume only through this explicit call,
+// never through auto_resume.
 func (r *Runner) Resume(ctx context.Context, runID int64) error {
 	run, err := db.New(r.pool).GetBackfillRun(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("backfill: run %d: %w", runID, err)
 	}
-	if run.Status != "running" {
+	if run.Status != "running" && run.Status != "cancelled" {
 		return fmt.Errorf("backfill: run %d is %s, not resumable", runID, run.Status)
+	}
+	if _, err := db.New(r.pool).ReactivateBackfillRun(ctx, runID); err != nil {
+		return err
 	}
 	r.logger.Info("resuming backfill run", "run_id", runID)
 	return r.execute(ctx, runID, run.Since)
 }
 
+// Cancel records a deliberate stop of a run, keeping its cursors for a
+// later explicit resume. It reports whether the run was in fact running.
+func (r *Runner) Cancel(ctx context.Context, runID int64) (bool, error) {
+	n, err := db.New(r.pool).CancelBackfillRun(ctx, runID)
+	return n > 0, err
+}
+
 func (r *Runner) execute(ctx context.Context, runID int64, since *time.Time) error {
+	// one driver per run: a session advisory lock held for the whole run
+	// keeps auto_resume and a manual resume from double-fetching pages
+	lockConn, err := r.pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer lockConn.Release()
+	lockKey := fmt.Sprintf("backfill_run:%d", runID)
+	var locked bool
+	if err := lockConn.QueryRow(ctx,
+		`SELECT pg_try_advisory_lock(hashtextextended($1, 0))`, lockKey).Scan(&locked); err != nil {
+		return err
+	}
+	if !locked {
+		return fmt.Errorf("run %d: %w", runID, ErrRunLocked)
+	}
+	defer func() {
+		// only needed on the graceful path: a dead session releases its
+		// advisory locks automatically, but a pooled session lives on
+		_, _ = lockConn.Exec(context.WithoutCancel(ctx),
+			`SELECT pg_advisory_unlock(hashtextextended($1, 0))`, lockKey)
+	}()
+
 	tasks, err := db.New(r.pool).ListRunTasks(ctx, runID)
 	if err != nil {
 		return err

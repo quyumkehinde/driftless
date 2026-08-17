@@ -16,10 +16,12 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/quyumkehinde/driftless/internal/apply"
+	"github.com/quyumkehinde/driftless/internal/backfill"
 	"github.com/quyumkehinde/driftless/internal/config"
 	"github.com/quyumkehinde/driftless/internal/ingest"
 	"github.com/quyumkehinde/driftless/internal/obs"
 	"github.com/quyumkehinde/driftless/internal/queue"
+	"github.com/quyumkehinde/driftless/internal/store/db"
 	"github.com/quyumkehinde/driftless/internal/store/migrations"
 	"github.com/quyumkehinde/driftless/internal/stripeapi"
 )
@@ -118,6 +120,10 @@ func runServe(cmd *cobra.Command, cfg *config.Config, pool *pgxpool.Pool) error 
 		close(workersDone)
 	}()
 	go runReaper(ctx, q, cfg.Workers.VisibilityTimeout.Std(), logger)
+	if cfg.Backfill.AutoResume {
+		runner := backfill.NewRunner(pool, client, logger, backfill.NewMetrics(registry), nil)
+		go resumeInterruptedBackfills(ctx, pool, runner, logger)
+	}
 
 	errCh := make(chan error, 2)
 	go func() { errCh <- serveListener("ingest", ingestSrv) }()
@@ -146,6 +152,28 @@ func runServe(cmd *cobra.Command, cfg *config.Config, pool *pgxpool.Pool) error 
 		<-errCh
 		<-workersDone
 		return err
+	}
+}
+
+// resumeInterruptedBackfills continues any backfill run a crash left in
+// progress, sequentially and at backfill priority, so a restart never
+// silently abandons an import.
+func resumeInterruptedBackfills(ctx context.Context, pool *pgxpool.Pool, runner *backfill.Runner, logger *slog.Logger) {
+	runs, err := db.New(pool).ListResumableRuns(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			logger.Error("listing resumable backfill runs failed", "error", err)
+		}
+		return
+	}
+	for _, run := range runs {
+		logger.Info("auto-resuming backfill run", "run_id", run.ID)
+		if err := runner.Resume(ctx, run.ID); err != nil {
+			if ctx.Err() == nil {
+				logger.Error("backfill auto-resume failed", "run_id", run.ID, "error", err)
+			}
+			return
+		}
 	}
 }
 

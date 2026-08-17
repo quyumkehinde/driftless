@@ -46,6 +46,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newMigrateCmd(flags))
 	root.AddCommand(newJobsCmd(flags))
 	root.AddCommand(newServeCmd(flags))
+	root.AddCommand(newBackfillCmd(flags))
 
 	return root
 }

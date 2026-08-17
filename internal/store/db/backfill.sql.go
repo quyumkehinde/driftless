@@ -32,6 +32,20 @@ func (q *Queries) AdvanceBackfillCursor(ctx context.Context, arg AdvanceBackfill
 	return err
 }
 
+const cancelBackfillRun = `-- name: CancelBackfillRun :execrows
+UPDATE driftless.backfill_runs SET status = 'cancelled', finished_at = now()
+WHERE id = $1 AND status = 'running'
+`
+
+// Records a deliberate stop, so auto_resume leaves the run alone.
+func (q *Queries) CancelBackfillRun(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.Exec(ctx, cancelBackfillRun, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const createBackfillRun = `-- name: CreateBackfillRun :one
 INSERT INTO driftless.backfill_runs (requested_by, since)
 VALUES ($1, $2)
@@ -140,6 +154,8 @@ SELECT id, started_at, finished_at, requested_by, since, status FROM driftless.b
 `
 
 // Runs a crash left in progress; serve's auto_resume picks these up.
+// Cancelled runs are deliberately absent: a human stopped them, so a
+// human restarts them.
 func (q *Queries) ListResumableRuns(ctx context.Context) ([]DriftlessBackfillRun, error) {
 	rows, err := q.db.Query(ctx, listResumableRuns)
 	if err != nil {
@@ -199,6 +215,20 @@ func (q *Queries) ListRunTasks(ctx context.Context, runID int64) ([]DriftlessBac
 		return nil, err
 	}
 	return items, nil
+}
+
+const reactivateBackfillRun = `-- name: ReactivateBackfillRun :execrows
+UPDATE driftless.backfill_runs SET status = 'running', finished_at = NULL
+WHERE id = $1 AND status IN ('running', 'cancelled')
+`
+
+// An explicit resume of a cancelled run puts it back in flight.
+func (q *Queries) ReactivateBackfillRun(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.Exec(ctx, reactivateBackfillRun, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const startBackfillTask = `-- name: StartBackfillTask :exec

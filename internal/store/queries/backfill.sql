@@ -11,7 +11,19 @@ UPDATE driftless.backfill_runs SET status = $2, finished_at = now() WHERE id = $
 
 -- name: ListResumableRuns :many
 -- Runs a crash left in progress; serve's auto_resume picks these up.
+-- Cancelled runs are deliberately absent: a human stopped them, so a
+-- human restarts them.
 SELECT * FROM driftless.backfill_runs WHERE status = 'running' ORDER BY id;
+
+-- name: CancelBackfillRun :execrows
+-- Records a deliberate stop, so auto_resume leaves the run alone.
+UPDATE driftless.backfill_runs SET status = 'cancelled', finished_at = now()
+WHERE id = $1 AND status = 'running';
+
+-- name: ReactivateBackfillRun :execrows
+-- An explicit resume of a cancelled run puts it back in flight.
+UPDATE driftless.backfill_runs SET status = 'running', finished_at = NULL
+WHERE id = $1 AND status IN ('running', 'cancelled');
 
 -- name: CreateBackfillTask :one
 INSERT INTO driftless.backfill_tasks (run_id, object_type)

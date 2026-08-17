@@ -2,6 +2,7 @@ package backfill
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/quyumkehinde/driftless/internal/fakestripe"
+	"github.com/quyumkehinde/driftless/internal/store/db"
 	"github.com/quyumkehinde/driftless/internal/stripeapi"
 	"github.com/quyumkehinde/driftless/internal/testpg"
 )
@@ -271,5 +273,92 @@ func TestBackfillSince(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("customers = %d, want only the one created after since", n)
+	}
+}
+
+func TestRunLockPreventsConcurrentDrivers(t *testing.T) {
+	release := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	runner, fs, pool := newTestRunner(t, func(_ string, _, _ int64) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-release
+	})
+	seedAccount(t, fs, 3)
+
+	done := make(chan error, 1)
+	var runID int64
+	go func() {
+		id, err := runner.Start(context.Background(), Options{RequestedBy: "cli"})
+		runID = id
+		done <- err
+	}()
+	<-entered // the first driver holds the run lock mid-page
+
+	// a second driver on the same run must be refused, not double-fetch
+	second := NewRunner(pool, runner.client, runner.logger, nil, nil)
+	err := second.Resume(context.Background(), 1)
+	if !errors.Is(err, ErrRunLocked) {
+		t.Errorf("second driver err = %v, want ErrRunLocked", err)
+	}
+
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("first driver: %v", err)
+	}
+
+	// once released, the lock is free: resuming a done run errors on
+	// status, not on the lock
+	err = second.Resume(context.Background(), runID)
+	if err == nil || errors.Is(err, ErrRunLocked) {
+		t.Errorf("after completion err = %v, want a not-resumable status error", err)
+	}
+}
+
+func TestCancelledRunResumesOnlyExplicitly(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runner, fs, pool := newTestRunner(t, func(objectType string, _, _ int64) {
+		if objectType == "customer" {
+			cancel()
+		}
+	})
+	seedAccount(t, fs, 6)
+
+	runID, err := runner.Start(ctx, Options{RequestedBy: "cli"})
+	if err == nil {
+		t.Fatal("interrupted run should error")
+	}
+
+	// the CLI marks the deliberate stop
+	cancelled, err := runner.Cancel(context.Background(), runID)
+	if err != nil || !cancelled {
+		t.Fatalf("cancel: %v cancelled=%v", err, cancelled)
+	}
+
+	// auto_resume must not see it
+	resumable, err := db.New(pool).ListResumableRuns(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, run := range resumable {
+		if run.ID == runID {
+			t.Error("cancelled run listed as resumable: auto_resume would revive it")
+		}
+	}
+
+	// an explicit resume revives and completes it
+	if err := runner.Resume(context.Background(), runID); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT status FROM driftless.backfill_runs WHERE id = $1`, runID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "done" {
+		t.Errorf("status = %q, want done", status)
 	}
 }
