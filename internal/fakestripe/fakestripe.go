@@ -38,6 +38,7 @@ type Server struct {
 	events  []Event                              // append-only, oldest first
 	clock   time.Time
 	seq     int
+	faults  faults
 
 	srv *httptest.Server
 }

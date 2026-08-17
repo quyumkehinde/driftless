@@ -143,6 +143,12 @@ func (c *Client) GetObject(ctx context.Context, p Priority, objectType, id strin
 	return c.get(ctx, p, base+"/"+url.PathEscape(id), nil)
 }
 
+// GetAccount fetches the account the API key belongs to, for identity
+// checks in init, doctor, and the meta guard.
+func (c *Client) GetAccount(ctx context.Context, p Priority) (json.RawMessage, error) {
+	return c.get(ctx, p, "/v1/account", nil)
+}
+
 // ListPage is one page of a Stripe list response.
 type ListPage struct {
 	Data    []json.RawMessage `json:"data"`

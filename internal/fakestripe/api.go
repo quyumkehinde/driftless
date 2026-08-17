@@ -30,6 +30,16 @@ var pluralPaths = map[string]string{
 const defaultPageLimit = 10
 
 func (s *Server) apiHandler() http.Handler {
+	mux := s.apiRoutes()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.interceptFault(w) {
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) apiRoutes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/account", s.handleAccount)
 	mux.HandleFunc("GET /v1/events", s.handleEvents)
@@ -67,7 +77,7 @@ func (s *Server) handleAccount(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) handleGet(w http.ResponseWriter, objectType, id string) {
 	obj, ok := s.Object(objectType, id)
-	if !ok {
+	if !ok || s.isForced404(id) {
 		writeError(w, http.StatusNotFound, "resource_missing")
 		return
 	}
