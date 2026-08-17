@@ -8,6 +8,8 @@ ON CONFLICT (object_type, object_id) WHERE status IN ('pending','running')
 DO UPDATE SET
   latest_event_id = CASE
     WHEN COALESCE(EXCLUDED.latest_event_created, '-infinity') > COALESCE(driftless.jobs.latest_event_created, '-infinity')
+      OR (COALESCE(EXCLUDED.latest_event_created, '-infinity') = COALESCE(driftless.jobs.latest_event_created, '-infinity')
+          AND COALESCE(EXCLUDED.latest_event_id, '') > COALESCE(driftless.jobs.latest_event_id, ''))
     THEN EXCLUDED.latest_event_id
     ELSE driftless.jobs.latest_event_id
   END,
@@ -35,11 +37,15 @@ RETURNING *;
 
 -- name: CompleteJob :one
 -- If a newer event was coalesced onto the job while it ran, the work that
--- just finished may be stale: requeue instead of done.
+-- just finished may be stale: requeue instead of done. Newer follows the
+-- same (created, id) order as the payload-mode guard, ties included.
 UPDATE driftless.jobs
 SET status = CASE
       WHEN COALESCE(latest_event_created, '-infinity'::timestamptz)
            > COALESCE(sqlc.narg(claimed_event_created)::timestamptz, '-infinity'::timestamptz)
+        OR (COALESCE(latest_event_created, '-infinity'::timestamptz)
+            = COALESCE(sqlc.narg(claimed_event_created)::timestamptz, '-infinity'::timestamptz)
+            AND COALESCE(latest_event_id, '') > COALESCE(sqlc.narg(claimed_event_id)::text, ''))
       THEN 'pending'
       ELSE 'done'
     END,

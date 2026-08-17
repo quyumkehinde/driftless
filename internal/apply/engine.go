@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/quyumkehinde/driftless/internal/crashpoint"
 	"github.com/quyumkehinde/driftless/internal/queue"
 	"github.com/quyumkehinde/driftless/internal/store/db"
 	"github.com/quyumkehinde/driftless/internal/stripeapi"
@@ -87,7 +88,11 @@ func (e *Engine) Apply(ctx context.Context, job queue.Job) error {
 		if err := acquireObjectLock(ctx, tx, job.ObjectType, job.ObjectID); err != nil {
 			return err
 		}
-		return e.applyLocked(ctx, tx, job)
+		if err := e.applyLocked(ctx, tx, job); err != nil {
+			return err
+		}
+		crashpoint.Maybe("apply.before-commit")
+		return nil
 	})
 	if e.metrics != nil {
 		e.metrics.ApplySeconds.WithLabelValues(mode).Observe(time.Since(start).Seconds())
@@ -178,8 +183,11 @@ func (e *Engine) recordState(ctx context.Context, tx pgx.Tx, job queue.Job, sync
 	}); err != nil {
 		return err
 	}
-	if job.LatestEventID != nil {
-		if err := q.MarkEventProcessed(ctx, *job.LatestEventID); err != nil {
+	if job.LatestEventCreated != nil {
+		if err := q.MarkEventsProcessedForObject(ctx, db.MarkEventsProcessedForObjectParams{
+			ObjectID: job.ObjectID,
+			Created:  *job.LatestEventCreated,
+		}); err != nil {
 			return err
 		}
 	}

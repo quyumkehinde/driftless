@@ -1,9 +1,14 @@
 -- name: GetEventForApply :one
 SELECT type, payload FROM driftless.events WHERE event_id = $1;
 
--- name: MarkEventProcessed :exec
+-- name: MarkEventsProcessedForObject :exec
+-- Marks the applied event and every event it superseded through
+-- coalescing: same object, not newer than the applied event. Only
+-- unprocessed events are scanned, which the partial index keeps cheap.
 UPDATE driftless.events SET processed_at = now()
-WHERE event_id = $1 AND processed_at IS NULL;
+WHERE processed_at IS NULL
+  AND payload->'data'->'object'->>'id' = sqlc.arg(object_id)::text
+  AND created <= sqlc.arg(created);
 
 -- name: UpsertObjectState :exec
 -- Bookkeeping after a successful apply. last_event_* only move forward so
@@ -15,7 +20,10 @@ ON CONFLICT (object_type, object_id) DO UPDATE SET
   last_event_created = GREATEST(driftless.object_state.last_event_created, EXCLUDED.last_event_created),
   last_event_id = CASE
     WHEN COALESCE(EXCLUDED.last_event_created, '-infinity'::timestamptz)
-         >= COALESCE(driftless.object_state.last_event_created, '-infinity'::timestamptz)
+         > COALESCE(driftless.object_state.last_event_created, '-infinity'::timestamptz)
+      OR (COALESCE(EXCLUDED.last_event_created, '-infinity'::timestamptz)
+          = COALESCE(driftless.object_state.last_event_created, '-infinity'::timestamptz)
+          AND COALESCE(EXCLUDED.last_event_id, '') > COALESCE(driftless.object_state.last_event_id, ''))
     THEN EXCLUDED.last_event_id
     ELSE driftless.object_state.last_event_id
   END,

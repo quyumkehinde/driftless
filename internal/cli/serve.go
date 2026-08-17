@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -116,6 +117,7 @@ func runServe(cmd *cobra.Command, cfg *config.Config, pool *pgxpool.Pool) error 
 		workers.Run(ctx)
 		close(workersDone)
 	}()
+	go runReaper(ctx, q, cfg.Workers.VisibilityTimeout.Std(), logger)
 
 	errCh := make(chan error, 2)
 	go func() { errCh <- serveListener("ingest", ingestSrv) }()
@@ -144,6 +146,32 @@ func runServe(cmd *cobra.Command, cfg *config.Config, pool *pgxpool.Pool) error 
 		<-errCh
 		<-workersDone
 		return err
+	}
+}
+
+// runReaper periodically resurrects jobs whose worker died holding a
+// claim. It ticks at a quarter of the visibility timeout so a crashed
+// claim is noticed soon after it expires.
+func runReaper(ctx context.Context, q *queue.Queue, visibilityTimeout time.Duration, logger *slog.Logger) {
+	tick := min(max(visibilityTimeout/4, time.Second), 30*time.Second)
+	ticker := time.NewTicker(tick)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			n, err := q.Reap(ctx)
+			if err != nil {
+				if ctx.Err() == nil {
+					logger.Error("reaper failed", "error", err)
+				}
+				continue
+			}
+			if n > 0 {
+				logger.Warn("resurrected expired job claims", "count", n)
+			}
+		}
 	}
 }
 

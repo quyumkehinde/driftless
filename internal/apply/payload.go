@@ -34,8 +34,11 @@ func (e *Engine) applyPayload(ctx context.Context, tx pgx.Tx, job queue.Job, pay
 
 	if haveState && !eventNewer(job.LatestEventCreated, job.LatestEventID, state.LastEventCreated, state.LastEventID) {
 		// A newer event already applied: this payload is a stale snapshot.
-		if job.LatestEventID != nil {
-			return q.MarkEventProcessed(ctx, *job.LatestEventID)
+		if job.LatestEventCreated != nil {
+			return q.MarkEventsProcessedForObject(ctx, db.MarkEventsProcessedForObjectParams{
+				ObjectID: job.ObjectID,
+				Created:  *job.LatestEventCreated,
+			})
 		}
 		return nil
 	}

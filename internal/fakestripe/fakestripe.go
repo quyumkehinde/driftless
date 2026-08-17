@@ -74,7 +74,21 @@ func (s *Server) Advance(d time.Duration) {
 func (s *Server) Put(objectType, id string, obj map[string]any, eventType string) Event {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.putLocked(objectType, id, obj, eventType)
+}
 
+// PutTied is Put with the event stamped at the same instant as the
+// previous event, for same-second ordering-tie scenarios.
+func (s *Server) PutTied(objectType, id string, obj map[string]any, eventType string) Event {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// appendEvent advances the clock by one second; rewinding first pins
+	// this event to the previous event's timestamp
+	s.clock = s.clock.Add(-time.Second)
+	return s.putLocked(objectType, id, obj, eventType)
+}
+
+func (s *Server) putLocked(objectType, id string, obj map[string]any, eventType string) Event {
 	copied := make(map[string]any, len(obj)+2)
 	for k, v := range obj {
 		copied[k] = v

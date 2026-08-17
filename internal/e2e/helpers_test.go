@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -11,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const e2eSecret = "whsec_e2e_suite"
@@ -64,14 +67,15 @@ func freeAddr(t *testing.T) string {
 
 // serveProc is one running serve subprocess.
 type serveProc struct {
-	cmd       *exec.Cmd
-	IngestURL string
-	output    *strings.Builder
+	cmd        *exec.Cmd
+	IngestURL  string
+	MetricsURL string
+	output     *strings.Builder
 }
 
 // startServe launches the binary against the given database, optionally
 // with a crashpoint armed, and waits until it serves /healthz.
-func startServe(t *testing.T, binary, connString, apiBaseURL, crashpointName string) *serveProc {
+func startServe(t *testing.T, binary, connString, apiBaseURL, crashpointName string, extraEnv ...string) *serveProc {
 	t.Helper()
 	ingestAddr := freeAddr(t)
 	metricsAddr := freeAddr(t)
@@ -91,6 +95,7 @@ func startServe(t *testing.T, binary, connString, apiBaseURL, crashpointName str
 	if crashpointName != "" {
 		p.cmd.Env = append(p.cmd.Env, "DRIFTLESS_CRASHPOINT="+crashpointName)
 	}
+	p.cmd.Env = append(p.cmd.Env, extraEnv...)
 	p.cmd.Stdout = p.output
 	p.cmd.Stderr = p.output
 	if err := p.cmd.Start(); err != nil {
@@ -107,6 +112,7 @@ func startServe(t *testing.T, binary, connString, apiBaseURL, crashpointName str
 	})
 
 	p.IngestURL = "http://" + ingestAddr
+	p.MetricsURL = "http://" + metricsAddr
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		resp, err := http.Get(p.IngestURL + "/healthz")
@@ -145,4 +151,29 @@ func (p *serveProc) WaitExit(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatalf("serve did not exit; output:\n%s", p.output.String())
 	}
+}
+
+// waitFor polls cond until it holds or the deadline passes.
+func waitFor(t *testing.T, timeout time.Duration, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+// waitForDrain waits until no live jobs remain, meaning the workers have
+// consumed everything that was enqueued.
+func waitForDrain(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	waitFor(t, 30*time.Second, "job queue to drain", func() bool {
+		var live int
+		err := pool.QueryRow(context.Background(),
+			`SELECT count(*) FROM driftless.jobs WHERE status IN ('pending','running')`).Scan(&live)
+		return err == nil && live == 0
+	})
 }

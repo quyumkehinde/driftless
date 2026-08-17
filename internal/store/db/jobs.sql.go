@@ -57,6 +57,9 @@ UPDATE driftless.jobs
 SET status = CASE
       WHEN COALESCE(latest_event_created, '-infinity'::timestamptz)
            > COALESCE($2::timestamptz, '-infinity'::timestamptz)
+        OR (COALESCE(latest_event_created, '-infinity'::timestamptz)
+            = COALESCE($2::timestamptz, '-infinity'::timestamptz)
+            AND COALESCE(latest_event_id, '') > COALESCE($3::text, ''))
       THEN 'pending'
       ELSE 'done'
     END,
@@ -70,12 +73,14 @@ RETURNING status
 type CompleteJobParams struct {
 	ID                  int64
 	ClaimedEventCreated *time.Time
+	ClaimedEventID      *string
 }
 
 // If a newer event was coalesced onto the job while it ran, the work that
-// just finished may be stale: requeue instead of done.
+// just finished may be stale: requeue instead of done. Newer follows the
+// same (created, id) order as the payload-mode guard, ties included.
 func (q *Queries) CompleteJob(ctx context.Context, arg CompleteJobParams) (string, error) {
-	row := q.db.QueryRow(ctx, completeJob, arg.ID, arg.ClaimedEventCreated)
+	row := q.db.QueryRow(ctx, completeJob, arg.ID, arg.ClaimedEventCreated, arg.ClaimedEventID)
 	var status string
 	err := row.Scan(&status)
 	return status, err
@@ -117,6 +122,8 @@ ON CONFLICT (object_type, object_id) WHERE status IN ('pending','running')
 DO UPDATE SET
   latest_event_id = CASE
     WHEN COALESCE(EXCLUDED.latest_event_created, '-infinity') > COALESCE(driftless.jobs.latest_event_created, '-infinity')
+      OR (COALESCE(EXCLUDED.latest_event_created, '-infinity') = COALESCE(driftless.jobs.latest_event_created, '-infinity')
+          AND COALESCE(EXCLUDED.latest_event_id, '') > COALESCE(driftless.jobs.latest_event_id, ''))
     THEN EXCLUDED.latest_event_id
     ELSE driftless.jobs.latest_event_id
   END,

@@ -68,13 +68,23 @@ func (q *Queries) GetObjectState(ctx context.Context, arg GetObjectStateParams) 
 	return i, err
 }
 
-const markEventProcessed = `-- name: MarkEventProcessed :exec
+const markEventsProcessedForObject = `-- name: MarkEventsProcessedForObject :exec
 UPDATE driftless.events SET processed_at = now()
-WHERE event_id = $1 AND processed_at IS NULL
+WHERE processed_at IS NULL
+  AND payload->'data'->'object'->>'id' = $1::text
+  AND created <= $2
 `
 
-func (q *Queries) MarkEventProcessed(ctx context.Context, eventID string) error {
-	_, err := q.db.Exec(ctx, markEventProcessed, eventID)
+type MarkEventsProcessedForObjectParams struct {
+	ObjectID string
+	Created  time.Time
+}
+
+// Marks the applied event and every event it superseded through
+// coalescing: same object, not newer than the applied event. Only
+// unprocessed events are scanned, which the partial index keeps cheap.
+func (q *Queries) MarkEventsProcessedForObject(ctx context.Context, arg MarkEventsProcessedForObjectParams) error {
+	_, err := q.db.Exec(ctx, markEventsProcessedForObject, arg.ObjectID, arg.Created)
 	return err
 }
 
@@ -86,7 +96,10 @@ ON CONFLICT (object_type, object_id) DO UPDATE SET
   last_event_created = GREATEST(driftless.object_state.last_event_created, EXCLUDED.last_event_created),
   last_event_id = CASE
     WHEN COALESCE(EXCLUDED.last_event_created, '-infinity'::timestamptz)
-         >= COALESCE(driftless.object_state.last_event_created, '-infinity'::timestamptz)
+         > COALESCE(driftless.object_state.last_event_created, '-infinity'::timestamptz)
+      OR (COALESCE(EXCLUDED.last_event_created, '-infinity'::timestamptz)
+          = COALESCE(driftless.object_state.last_event_created, '-infinity'::timestamptz)
+          AND COALESCE(EXCLUDED.last_event_id, '') > COALESCE(driftless.object_state.last_event_id, ''))
     THEN EXCLUDED.last_event_id
     ELSE driftless.object_state.last_event_id
   END,

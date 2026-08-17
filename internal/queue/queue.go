@@ -99,6 +99,7 @@ func (q *Queue) Complete(ctx context.Context, job Job) (requeued bool, err error
 	status, err := db.New(q.pool).CompleteJob(ctx, db.CompleteJobParams{
 		ID:                  job.ID,
 		ClaimedEventCreated: job.LatestEventCreated,
+		ClaimedEventID:      job.LatestEventID,
 	})
 	if err != nil {
 		return false, err

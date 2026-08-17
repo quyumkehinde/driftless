@@ -99,8 +99,7 @@ func TestPayloadModeSkipsStaleEvent(t *testing.T) {
 }
 
 func TestPayloadModeSameTimestampTieBreak(t *testing.T) {
-	// same created second: the higher event id must win in BOTH delivery
-	// orders; sync-engine's < guard failed exactly this
+	// same created second: the higher event id must win in BOTH delivery orders
 	created := time.Unix(3000000, 0).UTC()
 	for name, order := range map[string][2]string{
 		"low then high": {"evt_tie_a", "evt_tie_b"},
