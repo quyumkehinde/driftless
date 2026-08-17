@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/quyumkehinde/driftless/internal/mirror"
 	"github.com/quyumkehinde/driftless/internal/queue"
 	"github.com/quyumkehinde/driftless/internal/store/db"
 	"github.com/quyumkehinde/driftless/internal/stripeapi"
@@ -53,10 +54,10 @@ func (e *Engine) applyPayload(ctx context.Context, tx pgx.Tx, job queue.Job, pay
 		if err := e.upsertSubscription(ctx, tx, job.ObjectID, object); err != nil {
 			return err
 		}
-	} else if err := upsertObject(ctx, tx, job.ObjectType, job.ObjectID, object); err != nil {
+	} else if err := mirror.UpsertObject(ctx, tx, job.ObjectType, job.ObjectID, object); err != nil {
 		return err
 	}
-	return e.finishApplied(ctx, tx, job, SyncSourcePayload)
+	return e.finishApplied(ctx, tx, job, mirror.SyncSourcePayload)
 }
 
 // eventNewer implements the payload-mode guard: strictly newer created

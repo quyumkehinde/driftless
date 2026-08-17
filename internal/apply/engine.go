@@ -12,19 +12,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/quyumkehinde/driftless/internal/crashpoint"
+	"github.com/quyumkehinde/driftless/internal/mirror"
 	"github.com/quyumkehinde/driftless/internal/queue"
 	"github.com/quyumkehinde/driftless/internal/store/db"
 	"github.com/quyumkehinde/driftless/internal/stripeapi"
-)
-
-// The object_state.sync_source values; fetch and payload double as the
-// apply-mode metric label. Backfill and repair are written by their own
-// packages in later milestones.
-const (
-	SyncSourceFetch    = "fetch"
-	SyncSourcePayload  = "payload"
-	SyncSourceBackfill = "backfill"
-	SyncSourceRepair   = "repair"
 )
 
 // Metrics holds the apply engine's prometheus instruments.
@@ -80,9 +71,9 @@ func NewEngine(pool *pgxpool.Pool, client *stripeapi.Client, payloadModeTypes []
 // job re-runs idempotently.
 func (e *Engine) Apply(ctx context.Context, job queue.Job) error {
 	start := time.Now()
-	mode := SyncSourceFetch
+	mode := mirror.SyncSourceFetch
 	if e.payloadMode[job.ObjectType] {
-		mode = SyncSourcePayload
+		mode = mirror.SyncSourcePayload
 	}
 	err := pgx.BeginFunc(ctx, e.pool, func(tx pgx.Tx) error {
 		if err := acquireObjectLock(ctx, tx, job.ObjectType, job.ObjectID); err != nil {
@@ -150,10 +141,10 @@ func (e *Engine) applyLocked(ctx context.Context, tx pgx.Tx, job queue.Job) erro
 		if err := e.upsertSubscription(ctx, tx, job.ObjectID, raw); err != nil {
 			return err
 		}
-	} else if err := upsertObject(ctx, tx, job.ObjectType, job.ObjectID, raw); err != nil {
+	} else if err := mirror.UpsertObject(ctx, tx, job.ObjectType, job.ObjectID, raw); err != nil {
 		return err
 	}
-	return e.finishApplied(ctx, tx, job, SyncSourceFetch)
+	return e.finishApplied(ctx, tx, job, mirror.SyncSourceFetch)
 }
 
 // finishApplied records bookkeeping for a successful upsert.
@@ -161,15 +152,15 @@ func (e *Engine) finishApplied(ctx context.Context, tx pgx.Tx, job queue.Job, sy
 	if err := e.recordState(ctx, tx, job, syncSource); err != nil {
 		return err
 	}
-	return notifyChange(ctx, tx, job.ObjectType, job.ObjectID)
+	return mirror.NotifyChange(ctx, tx, job.ObjectType, job.ObjectID)
 }
 
 // finishSoftDelete soft-deletes the object and records bookkeeping.
 func (e *Engine) finishSoftDelete(ctx context.Context, tx pgx.Tx, job queue.Job) error {
-	if err := softDeleteObject(ctx, tx, job.ObjectType, job.ObjectID); err != nil {
+	if err := mirror.SoftDeleteObject(ctx, tx, job.ObjectType, job.ObjectID); err != nil {
 		return err
 	}
-	return e.finishApplied(ctx, tx, job, SyncSourceFetch)
+	return e.finishApplied(ctx, tx, job, mirror.SyncSourceFetch)
 }
 
 func (e *Engine) recordState(ctx context.Context, tx pgx.Tx, job queue.Job, syncSource string) error {
@@ -192,6 +183,11 @@ func (e *Engine) recordState(ctx context.Context, tx pgx.Tx, job queue.Job, sync
 		}
 	}
 	return nil
+}
+
+// upsertSubscription is the engine's apply-path wrapper.
+func (e *Engine) upsertSubscription(ctx context.Context, tx pgx.Tx, subID string, raw []byte) error {
+	return mirror.UpsertSubscription(ctx, tx, e.client, stripeapi.PriorityWebhook, subID, raw)
 }
 
 // eventMarksDeleted reports whether the event payload's data.object carries

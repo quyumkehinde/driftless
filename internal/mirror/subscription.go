@@ -1,4 +1,4 @@
-package apply
+package mirror
 
 import (
 	"context"
@@ -11,13 +11,13 @@ import (
 	"github.com/quyumkehinde/driftless/internal/stripeapi"
 )
 
-// upsertSubscription writes the subscription row and explodes its items
+// UpsertSubscription writes the subscription row and explodes its items
 // into stripe.subscription_items in the same transaction: items absent
 // from the fetched set are soft-deleted, the rest upserted. The embedded
 // items list is paginated at ten, so has_more pages through the collection
 // before anything is written; truncating here is the entitlement-loss bug
-// class.
-func (e *Engine) upsertSubscription(ctx context.Context, tx pgx.Tx, subID string, raw []byte) error {
+// class. Every writer shares this code path with its own priority.
+func UpsertSubscription(ctx context.Context, tx pgx.Tx, client *stripeapi.Client, priority stripeapi.Priority, subID string, raw []byte) error {
 	var envelope struct {
 		Items struct {
 			Data    []json.RawMessage `json:"data"`
@@ -25,19 +25,19 @@ func (e *Engine) upsertSubscription(ctx context.Context, tx pgx.Tx, subID string
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return fmt.Errorf("apply: parse subscription %s: %w", subID, err)
+		return fmt.Errorf("mirror: parse subscription %s: %w", subID, err)
 	}
 
 	items := envelope.Items.Data
 	if envelope.Items.HasMore {
-		full, err := e.listAllSubscriptionItems(ctx, subID)
+		full, err := listAllSubscriptionItems(ctx, client, priority, subID)
 		if err != nil {
 			return err
 		}
 		items = full
 	}
 
-	if err := upsertObject(ctx, tx, stripeapi.ObjectSubscription, subID, raw); err != nil {
+	if err := UpsertObject(ctx, tx, stripeapi.ObjectSubscription, subID, raw); err != nil {
 		return err
 	}
 
@@ -47,9 +47,9 @@ func (e *Engine) upsertSubscription(ctx context.Context, tx pgx.Tx, subID string
 			ID string `json:"id"`
 		}
 		if err := json.Unmarshal(item, &itemID); err != nil || itemID.ID == "" {
-			return fmt.Errorf("apply: subscription %s item has no id", subID)
+			return fmt.Errorf("mirror: subscription %s item has no id", subID)
 		}
-		if err := upsertObject(ctx, tx, stripeapi.ObjectSubscriptionItem, itemID.ID, item); err != nil {
+		if err := UpsertObject(ctx, tx, stripeapi.ObjectSubscriptionItem, itemID.ID, item); err != nil {
 			return err
 		}
 		keep = append(keep, itemID.ID)
@@ -61,17 +61,17 @@ func (e *Engine) upsertSubscription(ctx context.Context, tx pgx.Tx, subID string
 		WHERE subscription = $1 AND NOT is_deleted AND NOT (id = ANY($2))`,
 		subID, keep)
 	if err != nil {
-		return fmt.Errorf("apply: prune subscription items for %s: %w", subID, err)
+		return fmt.Errorf("mirror: prune subscription items for %s: %w", subID, err)
 	}
 	return nil
 }
 
 // listAllSubscriptionItems pages through the item collection.
-func (e *Engine) listAllSubscriptionItems(ctx context.Context, subID string) ([]json.RawMessage, error) {
+func listAllSubscriptionItems(ctx context.Context, client *stripeapi.Client, priority stripeapi.Priority, subID string) ([]json.RawMessage, error) {
 	var items []json.RawMessage
 	query := url.Values{"subscription": {subID}, "limit": {"100"}}
 	for {
-		page, err := e.client.List(ctx, stripeapi.PriorityWebhook, "/v1/subscription_items", query)
+		page, err := client.List(ctx, priority, "/v1/subscription_items", query)
 		if err != nil {
 			return nil, err
 		}

@@ -39,6 +39,9 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc("GET /v1/checkout/sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
 		s.handleGet(w, stripeapi.ObjectCheckoutSession, r.PathValue("id"))
 	})
+	mux.HandleFunc("GET /v1/customers/{id}/payment_methods", func(w http.ResponseWriter, r *http.Request) {
+		s.handleList(w, r, stripeapi.ObjectPaymentMethod, filter{"customer", r.PathValue("id")})
+	})
 	mux.HandleFunc("GET /v1/{plural}", func(w http.ResponseWriter, r *http.Request) {
 		objectType, ok := pluralPaths[r.PathValue("plural")]
 		if !ok {
@@ -75,9 +78,27 @@ func (s *Server) handleGet(w http.ResponseWriter, objectType, id string) {
 // driftless lists; a set filter keeps objects whose field matches.
 var listFilterKeys = []string{"subscription", "customer"}
 
+// filter is one field constraint a route adds beyond the query string,
+// like the customer id baked into a path-shaped endpoint.
+type filter struct {
+	key, value string
+}
+
 // handleList serves cursor pagination the way Stripe does: insertion order
-// reversed (newest first), limit, starting_after, and field filters.
-func (s *Server) handleList(w http.ResponseWriter, r *http.Request, objectType string) {
+// reversed (newest first), limit, starting_after, field filters, and
+// created bounds.
+func (s *Server) handleList(w http.ResponseWriter, r *http.Request, objectType string, extra ...filter) {
+	gte, lte := createdBounds(r)
+	filters := make(map[string]string, len(listFilterKeys)+len(extra))
+	for _, key := range listFilterKeys {
+		if want := r.URL.Query().Get(key); want != "" {
+			filters[key] = want
+		}
+	}
+	for _, f := range extra {
+		filters[f.key] = f.value
+	}
+
 	s.mu.Lock()
 	ids := slices.Clone(s.order[objectType])
 	objs := make([]map[string]any, 0, len(ids))
@@ -85,10 +106,33 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request, objectType s
 	for _, id := range ids {
 		obj := s.objects[objectType][id]
 		matched := true
-		for _, key := range listFilterKeys {
-			if want := r.URL.Query().Get(key); want != "" && obj[key] != want {
+		for key, want := range filters {
+			if obj[key] != want {
 				matched = false
 				break
+			}
+		}
+		if matched && (!gte.IsZero() || !lte.IsZero()) {
+			created, ok := objCreated(obj)
+			if ok {
+				if !gte.IsZero() && created.Before(gte) {
+					matched = false
+				}
+				if !lte.IsZero() && created.After(lte) {
+					matched = false
+				}
+			}
+		}
+		// Stripe's subscriptions listing omits canceled subscriptions
+		// unless status is given; status=all returns everything. The
+		// double replicates the trap so backfill has to dodge it.
+		if matched && objectType == stripeapi.ObjectSubscription {
+			switch status := r.URL.Query().Get("status"); status {
+			case "":
+				matched = obj["status"] != "canceled"
+			case "all":
+			default:
+				matched = obj["status"] == status
 			}
 		}
 		if matched {
@@ -162,6 +206,21 @@ func paginate[T any](items []T, r *http.Request, idOf func(T) string) (page []T,
 		page = []T{}
 	}
 	return page, end < len(items)
+}
+
+// objCreated reads an object's created epoch, tolerating the numeric types
+// test objects carry.
+func objCreated(obj map[string]any) (time.Time, bool) {
+	switch v := obj["created"].(type) {
+	case int:
+		return time.Unix(int64(v), 0).UTC(), true
+	case int64:
+		return time.Unix(v, 0).UTC(), true
+	case float64:
+		return time.Unix(int64(v), 0).UTC(), true
+	default:
+		return time.Time{}, false
+	}
 }
 
 func createdBounds(r *http.Request) (gte, lte time.Time) {

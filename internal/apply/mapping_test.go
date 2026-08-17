@@ -3,6 +3,8 @@ package apply
 import (
 	"fmt"
 	"testing"
+
+	"github.com/quyumkehinde/driftless/internal/stripeapi"
 )
 
 func TestResolveType(t *testing.T) {
@@ -148,4 +150,23 @@ func TestResolveEvent(t *testing.T) {
 			t.Errorf("ok=%v err=%v, want ok=true with error", ok, err)
 		}
 	})
+}
+
+// TestMappingTargetsAreCanonical asserts every object type the event
+// mapping can produce is a canonical type the mirror can store.
+func TestMappingTargetsAreCanonical(t *testing.T) {
+	canonical := make(map[string]bool, len(stripeapi.AllObjectTypes))
+	for _, objectType := range stripeapi.AllObjectTypes {
+		canonical[objectType] = true
+	}
+	for eventType, objectType := range exactTypes {
+		if !canonical[objectType] {
+			t.Errorf("exactTypes[%q] = %q, not a canonical object type", eventType, objectType)
+		}
+	}
+	for _, family := range prefixFamilies {
+		if !canonical[family.objectType] {
+			t.Errorf("prefix %q maps to %q, not a canonical object type", family.prefix, family.objectType)
+		}
+	}
 }
