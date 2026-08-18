@@ -71,12 +71,31 @@ func freeAddr(t *testing.T) string {
 	return addr
 }
 
+// syncBuffer collects subprocess output. exec's copier goroutines write
+// it while cleanup and assertions read it, so access is locked.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // serveProc is one running serve subprocess.
 type serveProc struct {
 	cmd        *exec.Cmd
 	IngestURL  string
 	MetricsURL string
-	output     *strings.Builder
+	output     *syncBuffer
 }
 
 // startServe launches the binary against the given database, optionally
@@ -86,7 +105,7 @@ func startServe(t *testing.T, binary, connString, apiBaseURL, crashpointName str
 	ingestAddr := freeAddr(t)
 	metricsAddr := freeAddr(t)
 
-	p := &serveProc{output: &strings.Builder{}}
+	p := &serveProc{output: &syncBuffer{}}
 	p.cmd = exec.Command(binary, "serve")
 	p.cmd.Env = append(os.Environ(),
 		"DRIFTLESS_DATABASE_URL="+connString,
@@ -234,14 +253,14 @@ func waitForDrain(t *testing.T, pool *pgxpool.Pool) {
 // cliProc is one running driftless CLI subprocess.
 type cliProc struct {
 	cmd    *exec.Cmd
-	output *strings.Builder
+	output *syncBuffer
 }
 
 // startCLI launches the binary with the given args against the database
 // and fakestripe base URL, without waiting for completion.
 func startCLI(t *testing.T, binary, connString, apiBaseURL string, args ...string) *cliProc {
 	t.Helper()
-	p := &cliProc{output: &strings.Builder{}}
+	p := &cliProc{output: &syncBuffer{}}
 	p.cmd = exec.Command(binary, args...)
 	p.cmd.Env = append(os.Environ(),
 		"DRIFTLESS_DATABASE_URL="+connString,

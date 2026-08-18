@@ -49,6 +49,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newBackfillCmd(flags))
 	root.AddCommand(newInitCmd(flags))
 	root.AddCommand(newVerifyCmd(flags))
+	root.AddCommand(newStatusCmd(flags))
 
 	return root
 }

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,16 +35,22 @@ type Server struct {
 	t      *testing.T
 	secret string
 
-	mu      sync.Mutex
-	objects map[string]map[string]map[string]any // objectType -> id -> object
-	order   map[string][]string                  // objectType -> ids in insertion order
-	events  []Event                              // append-only, oldest first
-	clock   time.Time
-	seq     int
-	faults  faults
+	mu       sync.Mutex
+	objects  map[string]map[string]map[string]any // objectType -> id -> object
+	order    map[string][]string                  // objectType -> ids in insertion order
+	events   []Event                              // append-only, oldest first
+	clock    time.Time
+	seq      int
+	instance int64
+	faults   faults
 
 	srv *httptest.Server
 }
+
+// instanceSeq distinguishes event ids across instances in one process:
+// real Stripe event ids are globally unique, so the double's must be too,
+// or a receiver fed by two doubles misreads the second as a duplicate.
+var instanceSeq atomic.Int64
 
 // New starts the double. secret signs webhook deliveries; the internal
 // clock starts at a fixed instant and advances one second per mutation so
@@ -51,11 +58,12 @@ type Server struct {
 func New(t *testing.T, secret string) *Server {
 	t.Helper()
 	s := &Server{
-		t:       t,
-		secret:  secret,
-		objects: make(map[string]map[string]map[string]any),
-		order:   make(map[string][]string),
-		clock:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		t:        t,
+		secret:   secret,
+		objects:  make(map[string]map[string]map[string]any),
+		order:    make(map[string][]string),
+		clock:    time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		instance: instanceSeq.Add(1),
 	}
 	s.srv = httptest.NewServer(s.apiHandler())
 	t.Cleanup(s.srv.Close)
@@ -185,7 +193,7 @@ func (s *Server) Event(id string) (Event, bool) {
 func (s *Server) appendEvent(eventType string, dataObject map[string]any) Event {
 	s.seq++
 	s.clock = s.clock.Add(time.Second)
-	id := fmt.Sprintf("evt_fake%06d", s.seq)
+	id := fmt.Sprintf("evt_fake%d_%06d", s.instance, s.seq)
 
 	payload, err := json.Marshal(map[string]any{
 		"id":          id,
