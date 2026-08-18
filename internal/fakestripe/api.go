@@ -11,22 +11,21 @@ import (
 	"github.com/quyumkehinde/driftless/internal/stripeapi"
 )
 
-// pluralPaths maps URL segments to object types. Checkout sessions live
-// under a two-segment path and are routed explicitly.
-var pluralPaths = map[string]string{
-	"customers":          stripeapi.ObjectCustomer,
-	"subscriptions":      stripeapi.ObjectSubscription,
-	"subscription_items": stripeapi.ObjectSubscriptionItem,
-	"products":           stripeapi.ObjectProduct,
-	"prices":             stripeapi.ObjectPrice,
-	"invoices":           stripeapi.ObjectInvoice,
-	"charges":            stripeapi.ObjectCharge,
-	"payment_intents":    stripeapi.ObjectPaymentIntent,
-	"payment_methods":    stripeapi.ObjectPaymentMethod,
-	"setup_intents":      stripeapi.ObjectSetupIntent,
-	"refunds":            stripeapi.ObjectRefund,
-	"disputes":           stripeapi.ObjectDispute,
-}
+// pluralPaths maps URL segments to object types, derived from the
+// client's own collection table so the double's routes cannot drift from
+// the paths production code requests. Checkout sessions live under a
+// two-segment path and are routed explicitly.
+var pluralPaths = func() map[string]string {
+	paths := make(map[string]string, len(stripeapi.AllObjectTypes))
+	for _, objectType := range stripeapi.AllObjectTypes {
+		path, ok := stripeapi.CollectionPath(objectType)
+		if !ok || objectType == stripeapi.ObjectCheckoutSession {
+			continue
+		}
+		paths[strings.TrimPrefix(path, "/v1/")] = objectType
+	}
+	return paths
+}()
 
 const defaultPageLimit = 10
 
@@ -231,7 +230,7 @@ func paginate[T any](items []T, r *http.Request, idOf func(T) string) (page []T,
 	}
 	limit := defaultPageLimit
 	if raw := r.URL.Query().Get("limit"); raw != "" {
-		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= 100 {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= stripeapi.MaxPageLimit {
 			limit = n
 		}
 	}

@@ -14,6 +14,7 @@ import (
 
 	"github.com/quyumkehinde/driftless/internal/apply"
 	"github.com/quyumkehinde/driftless/internal/crashpoint"
+	"github.com/quyumkehinde/driftless/internal/mirror"
 	"github.com/quyumkehinde/driftless/internal/obs"
 	"github.com/quyumkehinde/driftless/internal/queue"
 	"github.com/quyumkehinde/driftless/internal/store/db"
@@ -73,7 +74,7 @@ func NewServer(pool *pgxpool.Pool, q *queue.Queue, verifier *Verifier, logger *s
 		pool:              pool,
 		queue:             q,
 		verifier:          verifier,
-		logger:            logger.With("component", "ingest"),
+		logger:            obs.WithComponent(logger, "ingest"),
 		metrics:           metrics,
 		lastUnhandledWarn: make(map[string]time.Time),
 	}
@@ -164,7 +165,7 @@ func (s *Server) record(r *http.Request, event eventEnvelope, body []byte) (inse
 			EventID:  event.ID,
 			Type:     event.Type,
 			Created:  time.Unix(event.Created, 0).UTC(),
-			Source:   "webhook",
+			Source:   mirror.EventSourceWebhook,
 			Payload:  body,
 			Livemode: event.Livemode,
 		}

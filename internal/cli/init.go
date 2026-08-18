@@ -31,7 +31,7 @@ func newInitCmd(flags *rootFlags) *cobra.Command {
 
 			limiter := stripeapi.NewLimiter(cfg.Stripe.APIRPS)
 			defer limiter.Stop()
-			client := stripeapi.New(cfg.Stripe.APIBaseURL, cfg.Stripe.APIKey, limiter, nil)
+			client := newStripeClient(cfg, limiter)
 			account, err := client.GetAccount(cmd.Context(), stripeapi.PriorityWebhook)
 			if err != nil {
 				return fmt.Errorf("stripe api key check failed: %w", err)
@@ -70,17 +70,13 @@ func newInitCmd(flags *rootFlags) *cobra.Command {
 				return nil
 			}
 
-			logger, err := buildLogger(cmd, cfg)
+			runner, err := newBackfillRunner(cmd, cfg, pool, client)
 			if err != nil {
 				return err
 			}
-			runner := backfill.NewRunner(pool, client, logger, nil,
-				func(objectType string, pages, objects int64) {
-					cmd.Printf("%-18s pages=%-5d objects=%d\n", objectType, pages, objects)
-				})
 			runID, err := runner.Start(cmd.Context(), backfill.Options{RequestedBy: "auto-init"})
 			if err != nil {
-				return fmt.Errorf("backfill run %d: %w (resume with: driftless backfill --resume %d)", runID, err, runID)
+				return resumeHint(runID, err)
 			}
 			cmd.Printf("backfill run %d complete; driftless is ready\n", runID)
 			return nil

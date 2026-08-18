@@ -1,3 +1,6 @@
+// Package e2e holds end-to-end tests that run the real binary against a
+// real Postgres and the fakestripe double: crash-kill recovery, load,
+// backfill at scale, and full webhook-to-mirror convergence.
 package e2e
 
 import (

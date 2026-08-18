@@ -2,8 +2,9 @@ package config
 
 import (
 	"fmt"
-	"slices"
 	"strings"
+
+	"github.com/quyumkehinde/driftless/internal/obs"
 )
 
 // Scope selects which validation rules apply: serve needs more than the
@@ -35,9 +36,6 @@ func (v ValidationErrors) ExitCode() int { return 2 }
 // Unwrap exposes the individual violations to errors.Is and errors.As.
 func (v ValidationErrors) Unwrap() []error { return v }
 
-var validLogLevels = []string{"debug", "info", "warn", "error"}
-var validLogFormats = []string{"json", "text"}
-
 // Validate checks the whole config at once and returns every violation
 // together, plus non-fatal warnings for the caller to surface.
 func (c *Config) Validate(scope Scope) (warnings []string, err error) {
@@ -62,10 +60,10 @@ func (c *Config) Validate(scope Scope) (warnings []string, err error) {
 	if c.Workers.Count < 1 || c.Workers.Count > 64 {
 		errs = append(errs, fmt.Errorf("workers.count must be between 1 and 64, got %d", c.Workers.Count))
 	}
-	if !slices.Contains(validLogLevels, c.Log.Level) {
-		errs = append(errs, fmt.Errorf("log.level must be one of debug|info|warn|error, got %q", c.Log.Level))
+	if _, err := obs.ParseLevel(c.Log.Level); err != nil {
+		errs = append(errs, err)
 	}
-	if !slices.Contains(validLogFormats, c.Log.Format) {
+	if !obs.ValidFormat(c.Log.Format) {
 		errs = append(errs, fmt.Errorf("log.format must be one of json|text, got %q", c.Log.Format))
 	}
 

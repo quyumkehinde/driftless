@@ -13,6 +13,7 @@ import (
 
 	"github.com/quyumkehinde/driftless/internal/crashpoint"
 	"github.com/quyumkehinde/driftless/internal/mirror"
+	"github.com/quyumkehinde/driftless/internal/obs"
 	"github.com/quyumkehinde/driftless/internal/queue"
 	"github.com/quyumkehinde/driftless/internal/store/db"
 	"github.com/quyumkehinde/driftless/internal/stripeapi"
@@ -60,7 +61,7 @@ func NewEngine(pool *pgxpool.Pool, client *stripeapi.Client, payloadModeTypes []
 		pool:        pool,
 		client:      client,
 		payloadMode: payloadMode,
-		logger:      logger.With("component", "apply"),
+		logger:      obs.WithComponent(logger, "apply"),
 		metrics:     metrics,
 	}
 }

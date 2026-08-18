@@ -19,6 +19,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/quyumkehinde/driftless/internal/apply"
+	"github.com/quyumkehinde/driftless/internal/mirror"
 	"github.com/quyumkehinde/driftless/internal/obs"
 	"github.com/quyumkehinde/driftless/internal/queue"
 	"github.com/quyumkehinde/driftless/internal/store/db"
@@ -33,6 +34,12 @@ const grace = 60 * time.Second
 // recovery stops being trustworthy: the events API retains roughly thirty
 // days, and warning at twenty-five leaves time to act.
 const cliffWarnAge = 25 * 24 * time.Hour
+
+// Sweep row statuses; only done rows advance the checkpoint.
+const (
+	statusDone   = "done"
+	statusFailed = "failed"
+)
 
 // Metrics holds the sweeper's prometheus instruments.
 type Metrics struct {
@@ -87,7 +94,7 @@ func New(pool *pgxpool.Pool, client *stripeapi.Client, q *queue.Queue, logger *s
 		pool:             pool,
 		client:           client,
 		queue:            q,
-		logger:           logger.With("component", "sweep"),
+		logger:           obs.WithComponent(logger, "sweep"),
 		metrics:          metrics,
 		overlap:          overlap,
 		firstRunLookback: firstRunLookback,
@@ -123,9 +130,9 @@ func (s *Sweeper) RunOnce(ctx context.Context) (Result, error) {
 	}
 
 	result, sweepErr := s.walk(ctx, sweepRow.ID, windowFrom, windowTo)
-	status := "done"
+	status := statusDone
 	if sweepErr != nil {
-		status = "failed"
+		status = statusFailed
 	}
 	if err := db.New(s.pool).FinishSweep(context.WithoutCancel(ctx), db.FinishSweepParams{
 		ID: sweepRow.ID, Status: status,
@@ -156,7 +163,7 @@ func (s *Sweeper) window(ctx context.Context) (from, to time.Time, err error) {
 	switch {
 	case err == nil:
 		from = last.WindowTo.Add(-s.overlap)
-	case isNoRows(err):
+	case errors.Is(err, pgx.ErrNoRows):
 		from = s.now().Add(-s.firstRunLookback)
 	default:
 		return time.Time{}, time.Time{}, err
@@ -172,7 +179,7 @@ func (s *Sweeper) window(ctx context.Context) (from, to time.Time, err error) {
 func (s *Sweeper) walk(ctx context.Context, sweepID int64, from, to time.Time) (Result, error) {
 	var result Result
 	query := url.Values{
-		"limit":        {"100"},
+		"limit":        {strconv.Itoa(stripeapi.MaxPageLimit)},
 		"created[gte]": {strconv.FormatInt(from.Unix(), 10)},
 		"created[lte]": {strconv.FormatInt(to.Unix(), 10)},
 	}
@@ -237,7 +244,7 @@ func (s *Sweeper) recordIfMissing(ctx context.Context, sweepID int64, raw json.R
 			EventID:  event.ID,
 			Type:     event.Type,
 			Created:  time.Unix(event.Created, 0).UTC(),
-			Source:   "sweep",
+			Source:   mirror.EventSourceSweep,
 			Payload:  []byte(raw),
 			Livemode: event.Livemode,
 		}
@@ -320,8 +327,4 @@ func (s *Sweeper) checkCliff(windowFrom time.Time) {
 			"sweep window reaches back further than the event retention cliff; run driftless backfill --since to recover",
 			"window_age_days", int(age.Hours()/24))
 	}
-}
-
-func isNoRows(err error) bool {
-	return errors.Is(err, pgx.ErrNoRows)
 }

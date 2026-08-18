@@ -10,6 +10,7 @@ coverage.out
 # Local-only spec and planning docs (not published)
 /docs/
 /PLAN.md
+/marketing/
 
 # Local config / secrets
 /driftless.yaml

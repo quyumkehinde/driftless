@@ -19,11 +19,20 @@ import (
 
 	"github.com/quyumkehinde/driftless/internal/crashpoint"
 	"github.com/quyumkehinde/driftless/internal/mirror"
+	"github.com/quyumkehinde/driftless/internal/obs"
 	"github.com/quyumkehinde/driftless/internal/store/db"
 	"github.com/quyumkehinde/driftless/internal/stripeapi"
 )
 
-const pageLimit = 100
+// The backfill_runs.status and backfill_tasks.status values, matching the
+// schema CHECK constraints. Runs add cancelled; tasks add failed.
+const (
+	StatusRunning   = "running"
+	StatusDone      = "done"
+	StatusFailed    = "failed"
+	StatusCancelled = "cancelled"
+	statusPending   = "pending"
+)
 
 // pageRetryDelay paces retries when a page fetch keeps failing after the
 // client's own retry budget, as during a sustained 429 storm.
@@ -90,7 +99,7 @@ func NewRunner(pool *pgxpool.Pool, client *stripeapi.Client, logger *slog.Logger
 	return &Runner{
 		pool:     pool,
 		client:   client,
-		logger:   logger.With("component", "backfill"),
+		logger:   obs.WithComponent(logger, "backfill"),
 		metrics:  metrics,
 		progress: progress,
 	}
@@ -155,7 +164,7 @@ func (r *Runner) Resume(ctx context.Context, runID int64) error {
 	if err != nil {
 		return fmt.Errorf("backfill: run %d: %w", runID, err)
 	}
-	if run.Status != "running" && run.Status != "cancelled" {
+	if run.Status != StatusRunning && run.Status != StatusCancelled {
 		return fmt.Errorf("backfill: run %d is %s, not resumable", runID, run.Status)
 	}
 	if _, err := db.New(r.pool).ReactivateBackfillRun(ctx, runID); err != nil {
@@ -214,20 +223,20 @@ func (r *Runner) execute(ctx context.Context, runID int64, since *time.Time) err
 		return err
 	}
 	for _, task := range tasks {
-		if task.Status == "done" {
+		if task.Status == StatusDone {
 			continue
 		}
 		if err := r.runTask(ctx, task, since); err != nil {
 			// the run stays 'running' so it can be resumed
 			msg := err.Error()
 			_ = db.New(r.pool).FinishBackfillTask(context.WithoutCancel(ctx), db.FinishBackfillTaskParams{
-				ID: task.ID, Status: "failed", LastError: &msg,
+				ID: task.ID, Status: StatusFailed, LastError: &msg,
 			})
 			return fmt.Errorf("backfill: task %s: %w", task.ObjectType, err)
 		}
 	}
 	if err := db.New(r.pool).FinishBackfillRun(ctx, db.FinishBackfillRunParams{
-		ID: runID, Status: "done",
+		ID: runID, Status: StatusDone,
 	}); err != nil {
 		return err
 	}
@@ -281,7 +290,7 @@ func (r *Runner) runListWalk(ctx context.Context, task db.DriftlessBackfillTask,
 		cursor = &lastID
 	}
 	return db.New(r.pool).FinishBackfillTask(ctx, db.FinishBackfillTaskParams{
-		ID: task.ID, Status: "done",
+		ID: task.ID, Status: StatusDone,
 	})
 }
 
@@ -316,7 +325,7 @@ func (r *Runner) runPaymentMethods(ctx context.Context, task db.DriftlessBackfil
 	}
 
 	for _, customer := range customers {
-		query := url.Values{"limit": {strconv.Itoa(pageLimit)}}
+		query := url.Values{"limit": {strconv.Itoa(stripeapi.MaxPageLimit)}}
 		path := "/v1/customers/" + url.PathEscape(customer) + "/payment_methods"
 		for {
 			page, err := r.fetchPage(ctx, path, query)
@@ -341,7 +350,7 @@ func (r *Runner) runPaymentMethods(ctx context.Context, task db.DriftlessBackfil
 		}
 	}
 	return db.New(r.pool).FinishBackfillTask(ctx, db.FinishBackfillTaskParams{
-		ID: task.ID, Status: "done",
+		ID: task.ID, Status: StatusDone,
 	})
 }
 
@@ -469,23 +478,11 @@ func (r *Runner) upsertGuarded(ctx context.Context, tx pgx.Tx, objectType, id st
 
 // listRequest builds the collection path and base query for one type.
 func listRequest(objectType string, since *time.Time) (string, url.Values) {
-	query := url.Values{"limit": {strconv.Itoa(pageLimit)}}
+	query := url.Values{"limit": {strconv.Itoa(stripeapi.MaxPageLimit)}}
 	if since != nil {
 		query.Set("created[gte]", strconv.FormatInt(since.Unix(), 10))
 	}
-	path := map[string]string{
-		stripeapi.ObjectProduct:         "/v1/products",
-		stripeapi.ObjectPrice:           "/v1/prices",
-		stripeapi.ObjectCustomer:        "/v1/customers",
-		stripeapi.ObjectSubscription:    "/v1/subscriptions",
-		stripeapi.ObjectInvoice:         "/v1/invoices",
-		stripeapi.ObjectCharge:          "/v1/charges",
-		stripeapi.ObjectPaymentIntent:   "/v1/payment_intents",
-		stripeapi.ObjectSetupIntent:     "/v1/setup_intents",
-		stripeapi.ObjectRefund:          "/v1/refunds",
-		stripeapi.ObjectDispute:         "/v1/disputes",
-		stripeapi.ObjectCheckoutSession: "/v1/checkout/sessions",
-	}[objectType]
+	path, _ := stripeapi.CollectionPath(objectType)
 	if objectType == stripeapi.ObjectSubscription {
 		// the default listing omits canceled subscriptions; status=all is
 		// the difference between a mirror and a lie

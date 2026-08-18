@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/quyumkehinde/driftless/internal/obs"
 )
 
 // Applier performs the work for one claimed job. The apply engine implements
@@ -18,8 +20,10 @@ type Applier interface {
 
 // Metrics holds the queue's prometheus instruments.
 type Metrics struct {
-	Processed *prometheus.CounterVec
-	Dead      prometheus.Counter
+	Processed   *prometheus.CounterVec
+	Dead        prometheus.Counter
+	Jobs        *prometheus.GaugeVec
+	DeliveryLag prometheus.Histogram
 }
 
 // NewMetrics registers the queue metric families on reg.
@@ -33,9 +37,33 @@ func NewMetrics(reg *prometheus.Registry) *Metrics {
 			Name: "driftless_jobs_dead_total",
 			Help: "Jobs that exhausted their attempts.",
 		}),
+		Jobs: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "driftless_jobs_total",
+			Help: "Jobs currently in the queue by status.",
+		}, []string{"status"}),
+		// Lag spans milliseconds (live webhooks) to many minutes (retries,
+		// outage recovery): 100ms doubling out to ~55 minutes.
+		DeliveryLag: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "driftless_delivery_lag_seconds",
+			Help:    "Time from Stripe event creation to the mirror applying it.",
+			Buckets: prometheus.ExponentialBuckets(0.1, 2, 16),
+		}),
 	}
-	reg.MustRegister(m.Processed, m.Dead)
+	reg.MustRegister(m.Processed, m.Dead, m.Jobs, m.DeliveryLag)
 	return m
+}
+
+// SampleJobs refreshes the jobs gauge from the queue. Statuses with no
+// rows are reset so a drained status reads zero, not its last value.
+func (m *Metrics) SampleJobs(ctx context.Context, q *Queue) error {
+	counts, err := q.CountByStatus(ctx)
+	if err != nil {
+		return err
+	}
+	for _, status := range []string{StatusPending, StatusRunning, StatusDone, StatusDead} {
+		m.Jobs.WithLabelValues(status).Set(float64(counts[status]))
+	}
+	return nil
 }
 
 // WorkerPool runs N goroutines that claim and apply jobs until the context
@@ -57,7 +85,7 @@ func NewWorkerPool(q *Queue, applier Applier, count int, pollInterval time.Durat
 		applier:      applier,
 		count:        count,
 		pollInterval: pollInterval,
-		logger:       logger.With("component", "queue"),
+		logger:       obs.WithComponent(logger, "queue"),
 		metrics:      metrics,
 	}
 }
@@ -131,7 +159,12 @@ func (w *WorkerPool) process(ctx context.Context, job Job) {
 		w.logger.Debug("job requeued for newer coalesced event", "job_id", job.ID)
 		return
 	}
-	w.withMetrics(func(m *Metrics) { m.Processed.WithLabelValues("done").Inc() })
+	w.withMetrics(func(m *Metrics) {
+		m.Processed.WithLabelValues("done").Inc()
+		if job.LatestEventCreated != nil {
+			m.DeliveryLag.Observe(time.Since(*job.LatestEventCreated).Seconds())
+		}
+	})
 }
 
 func (w *WorkerPool) withMetrics(f func(*Metrics)) {

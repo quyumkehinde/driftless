@@ -17,6 +17,21 @@ import (
 // Job is one row of the jobs table.
 type Job = db.DriftlessJob
 
+// The jobs.status values, matching the schema's CHECK constraint.
+const (
+	StatusPending = "pending"
+	StatusRunning = "running"
+	StatusDone    = "done"
+	StatusDead    = "dead"
+)
+
+// KindSyncObject is the only job kind produced today; process_event is
+// reserved in the schema for a future direct-event kind.
+const KindSyncObject = "sync_object"
+
+// DefaultPriority mirrors the schema default: lower runs sooner.
+const DefaultPriority = 100
+
 // backoffSchedule is the delay before retry attempt n+1; attempts past the
 // end reuse the last entry. Each delay gets +-20% jitter.
 var backoffSchedule = []time.Duration{
@@ -58,10 +73,10 @@ type EnqueueParams struct {
 // inserted is false when the enqueue coalesced.
 func (q *Queue) Enqueue(ctx context.Context, tx pgx.Tx, p EnqueueParams) (id int64, inserted bool, err error) {
 	if p.Kind == "" {
-		p.Kind = "sync_object"
+		p.Kind = KindSyncObject
 	}
 	if p.Priority == 0 {
-		p.Priority = 100
+		p.Priority = DefaultPriority
 	}
 	maxAttempts := q.maxAttempts
 	if maxAttempts <= 0 {
@@ -112,7 +127,7 @@ func (q *Queue) Complete(ctx context.Context, job Job) (requeued bool, err error
 	if err != nil {
 		return false, err
 	}
-	return status == "pending", nil
+	return status == StatusPending, nil
 }
 
 // Fail records a failed attempt: back to pending with backoff, or dead once
@@ -127,7 +142,7 @@ func (q *Queue) Fail(ctx context.Context, job Job, cause error) (dead bool, err 
 	if err != nil {
 		return false, err
 	}
-	return status == "dead", nil
+	return status == StatusDead, nil
 }
 
 // Reap resurrects running jobs whose claim expired (a crashed worker) and
@@ -139,7 +154,7 @@ func (q *Queue) Reap(ctx context.Context) (resurrected, dead int64, err error) {
 		return 0, 0, err
 	}
 	for _, row := range rows {
-		if row.Status == "dead" {
+		if row.Status == StatusDead {
 			dead++
 		} else {
 			resurrected++

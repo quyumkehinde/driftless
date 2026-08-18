@@ -9,23 +9,35 @@ import (
 	"log/slog"
 )
 
+// ParseLevel maps a config log level to its slog value; it is the single
+// source of truth config validation checks against.
+func ParseLevel(level string) (slog.Level, error) {
+	switch level {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "info":
+		return slog.LevelInfo, nil
+	case "warn":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	default:
+		return 0, fmt.Errorf("invalid log level %q (debug|info|warn|error)", level)
+	}
+}
+
+// ValidFormat reports whether a log format is supported.
+func ValidFormat(format string) bool {
+	return format == "json" || format == "text"
+}
+
 // NewLogger builds a slog.Logger writing to w. format is "json" or "text";
 // level is one of debug, info, warn, error.
 func NewLogger(w io.Writer, level, format string) (*slog.Logger, error) {
-	var lvl slog.Level
-	switch level {
-	case "debug":
-		lvl = slog.LevelDebug
-	case "info":
-		lvl = slog.LevelInfo
-	case "warn":
-		lvl = slog.LevelWarn
-	case "error":
-		lvl = slog.LevelError
-	default:
-		return nil, fmt.Errorf("invalid log level %q", level)
+	lvl, err := ParseLevel(level)
+	if err != nil {
+		return nil, err
 	}
-
 	opts := &slog.HandlerOptions{Level: lvl}
 	var handler slog.Handler
 	switch format {
@@ -34,7 +46,7 @@ func NewLogger(w io.Writer, level, format string) (*slog.Logger, error) {
 	case "text":
 		handler = slog.NewTextHandler(w, opts)
 	default:
-		return nil, fmt.Errorf("invalid log format %q", format)
+		return nil, fmt.Errorf("invalid log format %q (json|text)", format)
 	}
 	return slog.New(handler), nil
 }

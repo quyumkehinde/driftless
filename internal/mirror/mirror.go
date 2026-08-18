@@ -14,12 +14,21 @@ import (
 )
 
 // The object_state.sync_source values; fetch and payload double as the
-// apply-mode metric label.
+// apply-mode metric label. Repair arrives with verify, import with the
+// sync-engine importer.
 const (
 	SyncSourceFetch    = "fetch"
 	SyncSourcePayload  = "payload"
 	SyncSourceBackfill = "backfill"
 	SyncSourceRepair   = "repair"
+	SyncSourceImport   = "import"
+)
+
+// The events.source values, matching the schema's CHECK constraint. The
+// two writers, ingest and the sweeper, must agree with the schema here.
+const (
+	EventSourceWebhook = "webhook"
+	EventSourceSweep   = "sweep"
 )
 
 // tables whitelists the object types the mirror schema stores. Table names

@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/quyumkehinde/driftless/internal/stripeapi"
 )
 
 // AccountID is the fixed account the double reports on GET /v1/account.
@@ -179,7 +181,7 @@ func (s *Server) appendEvent(eventType string, dataObject map[string]any) Event 
 	payload, err := json.Marshal(map[string]any{
 		"id":          id,
 		"object":      "event",
-		"api_version": "2026-01-01",
+		"api_version": stripeapi.StripeVersion,
 		"created":     s.clock.Unix(),
 		"livemode":    false,
 		"type":        eventType,

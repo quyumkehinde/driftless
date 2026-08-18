@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 
@@ -69,7 +70,7 @@ func UpsertSubscription(ctx context.Context, tx pgx.Tx, client *stripeapi.Client
 // listAllSubscriptionItems pages through the item collection.
 func listAllSubscriptionItems(ctx context.Context, client *stripeapi.Client, priority stripeapi.Priority, subID string) ([]json.RawMessage, error) {
 	var items []json.RawMessage
-	query := url.Values{"subscription": {subID}, "limit": {"100"}}
+	query := url.Values{"subscription": {subID}, "limit": {strconv.Itoa(stripeapi.MaxPageLimit)}}
 	for {
 		page, err := client.List(ctx, priority, "/v1/subscription_items", query)
 		if err != nil {

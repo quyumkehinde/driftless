@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/cobra"
 
 	"github.com/quyumkehinde/driftless/internal/backfill"
@@ -50,7 +51,7 @@ func newBackfillCmd(flags *rootFlags) *cobra.Command {
 				} else {
 					cmd.Println("  filter: full history")
 				}
-				cmd.Println("  pages of 100 per call; call count depends on account size")
+				cmd.Printf("  pages of %d per call; call count depends on account size\n", stripeapi.MaxPageLimit)
 				return nil
 			}
 
@@ -62,15 +63,11 @@ func newBackfillCmd(flags *rootFlags) *cobra.Command {
 
 			limiter := stripeapi.NewLimiter(cfg.Stripe.APIRPS)
 			defer limiter.Stop()
-			client := stripeapi.New(cfg.Stripe.APIBaseURL, cfg.Stripe.APIKey, limiter, nil)
-			logger, err := buildLogger(cmd, cfg)
+			client := newStripeClient(cfg, limiter)
+			runner, err := newBackfillRunner(cmd, cfg, pool, client)
 			if err != nil {
 				return err
 			}
-			runner := backfill.NewRunner(pool, client, logger, nil,
-				func(objectType string, pages, objects int64) {
-					cmd.Printf("%-18s pages=%-5d objects=%d\n", objectType, pages, objects)
-				})
 
 			// ctrl-c is a deliberate stop: mark the run cancelled so serve's
 			// auto_resume leaves it alone; only an explicit --resume revives it
@@ -97,7 +94,7 @@ func newBackfillCmd(flags *rootFlags) *cobra.Command {
 					return fmt.Errorf("backfill run %d cancelled; resume with: driftless backfill --resume %d", runID, runID)
 				}
 			}
-			return fmt.Errorf("backfill run %d: %w (resume with: driftless backfill --resume %d)", runID, err, runID)
+			return resumeHint(runID, err)
 		},
 	}
 	cmd.Flags().BoolVar(&full, "full", false, "all history (default when no --since)")
@@ -164,4 +161,29 @@ func normalizeObjectType(raw string) (string, error) {
 // buildLogger builds the command's logger from the effective log config.
 func buildLogger(cmd *cobra.Command, cfg *config.Config) (*slog.Logger, error) {
 	return obs.NewLogger(cmd.ErrOrStderr(), cfg.Log.Level, cfg.Log.Format)
+}
+
+// newStripeClient wires an unmetered API client for one-shot commands;
+// serve builds its own with metrics attached.
+func newStripeClient(cfg *config.Config, limiter *stripeapi.Limiter) *stripeapi.Client {
+	return stripeapi.New(cfg.Stripe.APIBaseURL, cfg.Stripe.APIKey, limiter, nil)
+}
+
+// newBackfillRunner wires a runner whose per-type progress lines go to
+// the command's stdout.
+func newBackfillRunner(cmd *cobra.Command, cfg *config.Config, pool *pgxpool.Pool, client *stripeapi.Client) (*backfill.Runner, error) {
+	logger, err := buildLogger(cmd, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return backfill.NewRunner(pool, client, logger, nil,
+		func(objectType string, pages, objects int64) {
+			cmd.Printf("%-18s pages=%-5d objects=%d\n", objectType, pages, objects)
+		}), nil
+}
+
+// resumeHint wraps a failed run's error with the exact command that
+// picks the run back up.
+func resumeHint(runID int64, err error) error {
+	return fmt.Errorf("backfill run %d: %w (resume with: driftless backfill --resume %d)", runID, err, runID)
 }

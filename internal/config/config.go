@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/quyumkehinde/driftless/internal/stripeapi"
 )
 
 // Config is the full configuration tree. Start from Defaults; zero values
@@ -91,7 +93,7 @@ type LogConfig struct {
 func Defaults() Config {
 	return Config{
 		Stripe: StripeConfig{
-			APIBaseURL:         "https://api.stripe.com",
+			APIBaseURL:         stripeapi.DefaultBaseURL,
 			APIRPS:             25,
 			SignatureTolerance: Duration(300 * time.Second),
 		},

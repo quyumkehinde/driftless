@@ -87,6 +87,27 @@ func NewMetrics(reg *prometheus.Registry, limiter *Limiter) *Metrics {
 	return m
 }
 
+// CollectionPath returns the API collection path for an object type, the
+// single source every lister derives its endpoints from.
+func CollectionPath(objectType string) (string, bool) {
+	path, ok := objectPaths[objectType]
+	return path, ok
+}
+
+// LastID extracts the final item's id from a page, for cursor advancement.
+func LastID(page *ListPage) (string, error) {
+	if len(page.Data) == 0 {
+		return "", fmt.Errorf("stripe: empty page has no cursor")
+	}
+	var envelope struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(page.Data[len(page.Data)-1], &envelope); err != nil {
+		return "", err
+	}
+	return envelope.ID, nil
+}
+
 // objectPaths maps object types to their API collection paths.
 var objectPaths = map[string]string{
 	ObjectCustomer:         "/v1/customers",

@@ -19,12 +19,16 @@ import (
 //go:embed *.sql
 var embedded embed.FS
 
+// VersionTable is where goose records applied versions. It is explicitly
+// schema-qualified; see newProvider for why the bare name is a trap.
+const VersionTable = "public.goose_db_version"
+
 func newProvider(db *sql.DB) (*goose.Provider, error) {
 	// The version table name must be schema-qualified: with the default
 	// search_path of "$user",public, a database user named driftless would
 	// resolve the bare name into the driftless schema once migration 0001
 	// creates it, and goose would lose its history.
-	store, err := database.NewStore(database.DialectPostgres, "public.goose_db_version")
+	store, err := database.NewStore(database.DialectPostgres, VersionTable)
 	if err != nil {
 		return nil, err
 	}

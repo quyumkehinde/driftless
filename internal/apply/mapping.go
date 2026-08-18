@@ -1,5 +1,6 @@
-// Package apply resolves events to the objects they concern and, in later
-// stages, applies object state to the mirror schema.
+// Package apply turns claimed jobs into mirror writes: it resolves events
+// to the objects they concern and applies fresh state under the per-object
+// lock, in fetch or payload mode.
 package apply
 
 import (

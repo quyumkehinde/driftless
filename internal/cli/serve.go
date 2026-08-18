@@ -28,6 +28,10 @@ import (
 
 const shutdownTimeout = 10 * time.Second
 
+// workerPollInterval is the idle sleep between claim attempts when the
+// queue is empty; claims themselves are immediate.
+const workerPollInterval = 250 * time.Millisecond
+
 func newServeCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "serve",
@@ -85,8 +89,9 @@ func runServe(cmd *cobra.Command, cfg *config.Config, pool *pgxpool.Pool) error 
 	defer limiter.Stop()
 	client := stripeapi.New(cfg.Stripe.APIBaseURL, cfg.Stripe.APIKey, limiter, stripeapi.NewMetrics(registry, limiter))
 	engine := apply.NewEngine(pool, client, cfg.Apply.PayloadModeTypes, logger, apply.NewMetrics(registry))
+	queueMetrics := queue.NewMetrics(registry)
 	workers := queue.NewWorkerPool(q, engine, cfg.Workers.Count,
-		250*time.Millisecond, logger, queue.NewMetrics(registry))
+		workerPollInterval, logger, queueMetrics)
 
 	latestMigration, err := migrations.LatestVersion()
 	if err != nil {
@@ -97,7 +102,7 @@ func runServe(cmd *cobra.Command, cfg *config.Config, pool *pgxpool.Pool) error 
 		obs.Check{Name: "migrations", Run: func(ctx context.Context) error {
 			var applied int64
 			err := pool.QueryRow(ctx,
-				`SELECT coalesce(max(version_id), 0) FROM public.goose_db_version`).Scan(&applied)
+				`SELECT coalesce(max(version_id), 0) FROM `+migrations.VersionTable).Scan(&applied)
 			if err != nil {
 				return err
 			}
@@ -119,7 +124,7 @@ func runServe(cmd *cobra.Command, cfg *config.Config, pool *pgxpool.Pool) error 
 		workers.Run(ctx)
 		close(workersDone)
 	}()
-	go runReaper(ctx, q, cfg.Workers.VisibilityTimeout.Std(), logger)
+	go runReaper(ctx, q, queueMetrics, cfg.Workers.VisibilityTimeout.Std(), logger)
 	if cfg.Backfill.AutoResume {
 		runner := backfill.NewRunner(pool, client, logger, backfill.NewMetrics(registry), nil)
 		go resumeInterruptedBackfills(ctx, pool, runner, logger)
@@ -182,9 +187,10 @@ func resumeInterruptedBackfills(ctx context.Context, pool *pgxpool.Pool, runner 
 }
 
 // runReaper periodically resurrects jobs whose worker died holding a
-// claim. It ticks at a quarter of the visibility timeout so a crashed
-// claim is noticed soon after it expires.
-func runReaper(ctx context.Context, q *queue.Queue, visibilityTimeout time.Duration, logger *slog.Logger) {
+// claim, and refreshes the queue-depth gauge on the same cadence. It
+// ticks at a quarter of the visibility timeout so a crashed claim is
+// noticed soon after it expires.
+func runReaper(ctx context.Context, q *queue.Queue, metrics *queue.Metrics, visibilityTimeout time.Duration, logger *slog.Logger) {
 	tick := min(max(visibilityTimeout/4, time.Second), 30*time.Second)
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
@@ -205,6 +211,9 @@ func runReaper(ctx context.Context, q *queue.Queue, visibilityTimeout time.Durat
 			}
 			if dead > 0 {
 				logger.Error("dead-lettered jobs with expired claims and exhausted budgets", "count", dead)
+			}
+			if err := metrics.SampleJobs(ctx, q); err != nil && ctx.Err() == nil {
+				logger.Error("sampling jobs gauge failed", "error", err)
 			}
 		}
 	}
