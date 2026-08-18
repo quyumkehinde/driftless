@@ -19,6 +19,57 @@ builds:
       - -X github.com/quyumkehinde/driftless/internal/cli.commit={{.ShortCommit}}
       - -X github.com/quyumkehinde/driftless/internal/cli.date={{.Date}}
 
-# build only for now; publishing (archives, image, cosign) comes later
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+dockers:
+  - image_templates:
+      - ghcr.io/quyumkehinde/driftless:{{ .Version }}-amd64
+    use: buildx
+    goarch: amd64
+    build_flag_templates:
+      - --platform=linux/amd64
+  - image_templates:
+      - ghcr.io/quyumkehinde/driftless:{{ .Version }}-arm64
+    use: buildx
+    goarch: arm64
+    build_flag_templates:
+      - --platform=linux/arm64
+
+docker_manifests:
+  - name_template: ghcr.io/quyumkehinde/driftless:{{ .Version }}
+    image_templates:
+      - ghcr.io/quyumkehinde/driftless:{{ .Version }}-amd64
+      - ghcr.io/quyumkehinde/driftless:{{ .Version }}-arm64
+  - name_template: ghcr.io/quyumkehinde/driftless:latest
+    image_templates:
+      - ghcr.io/quyumkehinde/driftless:{{ .Version }}-amd64
+      - ghcr.io/quyumkehinde/driftless:{{ .Version }}-arm64
+
+# keyless signing: the release workflow's OIDC identity signs checksums and
+# images, verifiable with cosign verify --certificate-identity-regexp
+signs:
+  - cmd: cosign
+    certificate: "${artifact}.pem"
+    args: ["sign-blob", "--output-certificate=${certificate}", "--output-signature=${signature}", "${artifact}", "--yes"]
+    artifacts: checksum
+    output: true
+
+docker_signs:
+  - cmd: cosign
+    args: ["sign", "${artifact}@${digest}", "--yes"]
+    artifacts: all
+
+changelog:
+  filters:
+    exclude:
+      - "^test:"
+      - "^chore:"
+
 release:
-  disable: true
+  draft: false
+  prerelease: auto
