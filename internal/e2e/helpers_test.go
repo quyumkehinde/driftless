@@ -177,3 +177,55 @@ func waitForDrain(t *testing.T, pool *pgxpool.Pool) {
 		return err == nil && live == 0
 	})
 }
+
+// cliProc is one running driftless CLI subprocess.
+type cliProc struct {
+	cmd    *exec.Cmd
+	output *strings.Builder
+}
+
+// startCLI launches the binary with the given args against the database
+// and fakestripe base URL, without waiting for completion.
+func startCLI(t *testing.T, binary, connString, apiBaseURL string, args ...string) *cliProc {
+	t.Helper()
+	p := &cliProc{output: &strings.Builder{}}
+	p.cmd = exec.Command(binary, args...)
+	p.cmd.Env = append(os.Environ(),
+		"DRIFTLESS_DATABASE_URL="+connString,
+		"DRIFTLESS_STRIPE_API_KEY=rk_test_e2e",
+		"DRIFTLESS_STRIPE_API_BASE_URL="+apiBaseURL,
+		"DRIFTLESS_STRIPE_API_RPS=100",
+		"DRIFTLESS_LOG_LEVEL=warn",
+		"DRIFTLESS_LOG_FORMAT=text",
+	)
+	p.cmd.Stdout = p.output
+	p.cmd.Stderr = p.output
+	if err := p.cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if p.cmd.ProcessState == nil {
+			_ = p.cmd.Process.Kill()
+			_, _ = p.cmd.Process.Wait()
+		}
+		if t.Failed() {
+			t.Logf("cli output:\n%s", p.output.String())
+		}
+	})
+	return p
+}
+
+// Wait blocks until the process exits, returning its success.
+func (p *cliProc) Wait() bool {
+	err := p.cmd.Wait()
+	return err == nil
+}
+
+// Kill9 kills the process without ceremony.
+func (p *cliProc) Kill9(t *testing.T) {
+	t.Helper()
+	if err := p.cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = p.cmd.Process.Wait()
+}

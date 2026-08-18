@@ -181,10 +181,23 @@ func (r *Runner) execute(ctx context.Context, runID int64, since *time.Time) err
 	}
 	defer lockConn.Release()
 	lockKey := fmt.Sprintf("backfill_run:%d", runID)
+	// A kill -9'd previous driver releases its lock only when Postgres
+	// tears its session down, which can lag a fast restart by a moment:
+	// retry briefly before concluding another live driver holds the run.
 	var locked bool
-	if err := lockConn.QueryRow(ctx,
-		`SELECT pg_try_advisory_lock(hashtextextended($1, 0))`, lockKey).Scan(&locked); err != nil {
-		return err
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		if err := lockConn.QueryRow(ctx,
+			`SELECT pg_try_advisory_lock(hashtextextended($1, 0))`, lockKey).Scan(&locked); err != nil {
+			return err
+		}
+		if locked || time.Now().After(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
 	}
 	if !locked {
 		return fmt.Errorf("run %d: %w", runID, ErrRunLocked)
