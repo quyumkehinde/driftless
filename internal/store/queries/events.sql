@@ -14,5 +14,13 @@ SELECT
   count(*) FILTER (WHERE source = 'sweep') AS sweep
 FROM driftless.events;
 
--- name: GetMeta :one
-SELECT stripe_account_id, livemode, initialized_at FROM driftless.meta;
+-- name: PurgeOldEvents :execrows
+-- Gap audit rows referencing a purged event go with it; an audit trail
+-- for an event the log no longer holds cannot be inspected anyway.
+WITH victims AS (
+  SELECT e.event_id FROM driftless.events e
+  WHERE e.received_at < $1 AND e.processed_at IS NOT NULL
+), purged_gaps AS (
+  DELETE FROM driftless.gaps WHERE event_id IN (SELECT event_id FROM victims)
+)
+DELETE FROM driftless.events WHERE event_id IN (SELECT event_id FROM victims);

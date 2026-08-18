@@ -260,6 +260,12 @@ type cliProc struct {
 // and fakestripe base URL, without waiting for completion.
 func startCLI(t *testing.T, binary, connString, apiBaseURL string, args ...string) *cliProc {
 	t.Helper()
+	return startCLIWithEnv(t, binary, connString, apiBaseURL, nil, args...)
+}
+
+// startCLIWithEnv is startCLI plus environment overrides.
+func startCLIWithEnv(t *testing.T, binary, connString, apiBaseURL string, extraEnv []string, args ...string) *cliProc {
+	t.Helper()
 	p := &cliProc{output: &syncBuffer{}}
 	p.cmd = exec.Command(binary, args...)
 	p.cmd.Env = append(os.Environ(),
@@ -270,6 +276,7 @@ func startCLI(t *testing.T, binary, connString, apiBaseURL string, args ...strin
 		"DRIFTLESS_LOG_LEVEL=warn",
 		"DRIFTLESS_LOG_FORMAT=text",
 	)
+	p.cmd.Env = append(p.cmd.Env, extraEnv...)
 	p.cmd.Stdout = p.output
 	p.cmd.Stderr = p.output
 	if err := p.cmd.Start(); err != nil {

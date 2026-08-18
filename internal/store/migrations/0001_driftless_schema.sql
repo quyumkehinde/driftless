@@ -124,6 +124,5 @@ CREATE TABLE driftless.meta (
   id                 boolean PRIMARY KEY DEFAULT true CHECK (id),
   stripe_account_id  text,                       -- acct_..., learned at first API call
   livemode           boolean,
-  schema_version     text NOT NULL,
   initialized_at     timestamptz NOT NULL DEFAULT now()
 );

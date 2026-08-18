@@ -51,23 +51,6 @@ func (q *Queries) GetEventByID(ctx context.Context, eventID string) (DriftlessEv
 	return i, err
 }
 
-const getMeta = `-- name: GetMeta :one
-SELECT stripe_account_id, livemode, initialized_at FROM driftless.meta
-`
-
-type GetMetaRow struct {
-	StripeAccountID *string
-	Livemode        *bool
-	InitializedAt   time.Time
-}
-
-func (q *Queries) GetMeta(ctx context.Context) (GetMetaRow, error) {
-	row := q.db.QueryRow(ctx, getMeta)
-	var i GetMetaRow
-	err := row.Scan(&i.StripeAccountID, &i.Livemode, &i.InitializedAt)
-	return i, err
-}
-
 const insertEvent = `-- name: InsertEvent :execrows
 INSERT INTO driftless.events (event_id, type, api_version, account_id, created, source, payload, livemode)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -98,6 +81,26 @@ func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) (int64
 		arg.Payload,
 		arg.Livemode,
 	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const purgeOldEvents = `-- name: PurgeOldEvents :execrows
+WITH victims AS (
+  SELECT e.event_id FROM driftless.events e
+  WHERE e.received_at < $1 AND e.processed_at IS NOT NULL
+), purged_gaps AS (
+  DELETE FROM driftless.gaps WHERE event_id IN (SELECT event_id FROM victims)
+)
+DELETE FROM driftless.events WHERE event_id IN (SELECT event_id FROM victims)
+`
+
+// Gap audit rows referencing a purged event go with it; an audit trail
+// for an event the log no longer holds cannot be inspected anyway.
+func (q *Queries) PurgeOldEvents(ctx context.Context, receivedAt time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, purgeOldEvents, receivedAt)
 	if err != nil {
 		return 0, err
 	}

@@ -127,11 +127,11 @@ func TestMigrations(t *testing.T) {
 
 	t.Run("meta single row guard", func(t *testing.T) {
 		if _, err := db.ExecContext(ctx,
-			`INSERT INTO driftless.meta (id, schema_version) VALUES (true, '1')`); err != nil {
+			`INSERT INTO driftless.meta (id) VALUES (true)`); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := db.ExecContext(ctx,
-			`INSERT INTO driftless.meta (id, schema_version) VALUES (false, '1')`); err == nil {
+			`INSERT INTO driftless.meta (id) VALUES (false)`); err == nil {
 			t.Error("meta must reject id = false")
 		}
 	})

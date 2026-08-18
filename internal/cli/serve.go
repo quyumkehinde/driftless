@@ -35,7 +35,8 @@ const shutdownTimeout = 10 * time.Second
 const workerPollInterval = 250 * time.Millisecond
 
 func newServeCmd(flags *rootFlags) *cobra.Command {
-	return &cobra.Command{
+	var forceAccount bool
+	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Run the webhook receiver and metrics listeners",
 		Args:  cobra.NoArgs,
@@ -49,9 +50,12 @@ func newServeCmd(flags *rootFlags) *cobra.Command {
 			if err := refuseIfMigrationsPending(cmd.Context(), cfg); err != nil {
 				return err
 			}
-			return runServe(cmd, cfg, pool)
+			return runServe(cmd, cfg, pool, forceAccount)
 		},
 	}
+	cmd.Flags().BoolVar(&forceAccount, "force-account", false,
+		"overwrite the recorded Stripe account instead of refusing on mismatch")
+	return cmd
 }
 
 // refuseIfMigrationsPending makes serve exit with the migrations-pending
@@ -72,7 +76,7 @@ func refuseIfMigrationsPending(ctx context.Context, cfg *config.Config) error {
 	return nil
 }
 
-func runServe(cmd *cobra.Command, cfg *config.Config, pool *pgxpool.Pool) error {
+func runServe(cmd *cobra.Command, cfg *config.Config, pool *pgxpool.Pool, forceAccount bool) error {
 	logger, err := obs.NewLogger(cmd.ErrOrStderr(), cfg.Log.Level, cfg.Log.Format)
 	if err != nil {
 		return err
@@ -90,6 +94,9 @@ func runServe(cmd *cobra.Command, cfg *config.Config, pool *pgxpool.Pool) error 
 	limiter := stripeapi.NewLimiter(cfg.Stripe.APIRPS)
 	defer limiter.Stop()
 	client := stripeapi.New(cfg.Stripe.APIBaseURL, cfg.Stripe.APIKey, limiter, stripeapi.NewMetrics(registry, limiter))
+	if err := ensureAccount(cmd.Context(), pool, client, forceAccount, logger); err != nil {
+		return err
+	}
 	engine := apply.NewEngine(pool, client, cfg.Apply.PayloadModeTypes, logger, apply.NewMetrics(registry))
 	queueMetrics := queue.NewMetrics(registry)
 	workers := queue.NewWorkerPool(q, engine, cfg.Workers.Count,
@@ -137,6 +144,9 @@ func runServe(cmd *cobra.Command, cfg *config.Config, pool *pgxpool.Pool) error 
 	if cfg.Verify.Auto {
 		verifier := verify.NewRunner(pool, client, logger, nil)
 		go runAutoVerify(ctx, pool, verifier, cfg.Verify.AutoTime, logger)
+	}
+	if cfg.Retention.EventsDays > 0 {
+		go runRetention(ctx, pool, cfg.Retention.EventsDays, logger)
 	}
 
 	errCh := make(chan error, 2)
@@ -318,6 +328,35 @@ func runAutoVerify(ctx context.Context, pool *pgxpool.Pool, r *verify.Runner, au
 				"checked", report.Checked, "drifted", report.Drifted)
 		default:
 			logger.Info("nightly verify clean", "checked", report.Checked)
+		}
+	}
+}
+
+// retentionInterval is how often the retention loop enforces the event
+// window. Purging hourly instead of nightly keeps each delete small and
+// makes the loop timezone-indifferent; deletion is idempotent.
+const retentionInterval = time.Hour
+
+// runRetention deletes processed events older than the configured window,
+// along with their gap audit rows.
+func runRetention(ctx context.Context, pool *pgxpool.Pool, days int, logger *slog.Logger) {
+	ticker := time.NewTicker(retentionInterval)
+	defer ticker.Stop()
+	for {
+		cutoff := time.Now().AddDate(0, 0, -days)
+		purged, err := db.New(pool).PurgeOldEvents(ctx, cutoff)
+		switch {
+		case err != nil:
+			if ctx.Err() == nil {
+				logger.Error("event retention purge failed", "error", err)
+			}
+		case purged > 0:
+			logger.Info("event retention purged old events", "count", purged, "older_than", cutoff.Format(time.DateOnly))
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
 		}
 	}
 }

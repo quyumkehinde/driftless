@@ -63,8 +63,8 @@ func TestDoctorFailsOnAccountMismatch(t *testing.T) {
 	fs := fakestripe.New(t, e2eSecret)
 
 	if _, err := pool.Exec(t.Context(), `
-		INSERT INTO driftless.meta (stripe_account_id, livemode, schema_version)
-		VALUES ('acct_someone_else', false, '1')`); err != nil {
+		INSERT INTO driftless.meta (stripe_account_id, livemode)
+		VALUES ('acct_someone_else', false)`); err != nil {
 		t.Fatal(err)
 	}
 

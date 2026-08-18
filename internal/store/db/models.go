@@ -73,7 +73,6 @@ type DriftlessMetum struct {
 	ID              bool
 	StripeAccountID *string
 	Livemode        *bool
-	SchemaVersion   string
 	InitializedAt   time.Time
 }
 

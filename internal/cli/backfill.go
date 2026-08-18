@@ -64,6 +64,13 @@ func newBackfillCmd(flags *rootFlags) *cobra.Command {
 			limiter := stripeapi.NewLimiter(cfg.Stripe.APIRPS)
 			defer limiter.Stop()
 			client := newStripeClient(cfg, limiter)
+			logger, err := buildLogger(cmd, cfg)
+			if err != nil {
+				return err
+			}
+			if err := ensureAccount(cmd.Context(), pool, client, false, logger); err != nil {
+				return err
+			}
 			runner, err := newBackfillRunner(cmd, cfg, pool, client)
 			if err != nil {
 				return err
