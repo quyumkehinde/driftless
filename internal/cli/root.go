@@ -50,6 +50,8 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newInitCmd(flags))
 	root.AddCommand(newVerifyCmd(flags))
 	root.AddCommand(newStatusCmd(flags))
+	root.AddCommand(newDoctorCmd(flags))
+	root.AddCommand(newEventsCmd(flags))
 
 	return root
 }

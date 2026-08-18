@@ -10,6 +10,64 @@ import (
 	"time"
 )
 
+const countEventsBySource = `-- name: CountEventsBySource :one
+SELECT
+  count(*) FILTER (WHERE source = 'webhook') AS webhook,
+  count(*) FILTER (WHERE source = 'sweep') AS sweep
+FROM driftless.events
+`
+
+type CountEventsBySourceRow struct {
+	Webhook int64
+	Sweep   int64
+}
+
+func (q *Queries) CountEventsBySource(ctx context.Context) (CountEventsBySourceRow, error) {
+	row := q.db.QueryRow(ctx, countEventsBySource)
+	var i CountEventsBySourceRow
+	err := row.Scan(&i.Webhook, &i.Sweep)
+	return i, err
+}
+
+const getEventByID = `-- name: GetEventByID :one
+SELECT event_id, type, api_version, account_id, created, received_at, source, payload, processed_at, livemode FROM driftless.events WHERE event_id = $1
+`
+
+func (q *Queries) GetEventByID(ctx context.Context, eventID string) (DriftlessEvent, error) {
+	row := q.db.QueryRow(ctx, getEventByID, eventID)
+	var i DriftlessEvent
+	err := row.Scan(
+		&i.EventID,
+		&i.Type,
+		&i.ApiVersion,
+		&i.AccountID,
+		&i.Created,
+		&i.ReceivedAt,
+		&i.Source,
+		&i.Payload,
+		&i.ProcessedAt,
+		&i.Livemode,
+	)
+	return i, err
+}
+
+const getMeta = `-- name: GetMeta :one
+SELECT stripe_account_id, livemode, initialized_at FROM driftless.meta
+`
+
+type GetMetaRow struct {
+	StripeAccountID *string
+	Livemode        *bool
+	InitializedAt   time.Time
+}
+
+func (q *Queries) GetMeta(ctx context.Context) (GetMetaRow, error) {
+	row := q.db.QueryRow(ctx, getMeta)
+	var i GetMetaRow
+	err := row.Scan(&i.StripeAccountID, &i.Livemode, &i.InitializedAt)
+	return i, err
+}
+
 const insertEvent = `-- name: InsertEvent :execrows
 INSERT INTO driftless.events (event_id, type, api_version, account_id, created, source, payload, livemode)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
