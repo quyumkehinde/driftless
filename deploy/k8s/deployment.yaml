@@ -1,0 +1,88 @@
+# replicas: 1 is the documented default. Running more is safe: the queue
+# claims with SKIP LOCKED, and the sweeper and schedulers elect a leader
+# per pass with Postgres advisory locks, so extra replicas add webhook and
+# worker capacity without duplicating scheduled work.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: driftless
+  labels:
+    app: driftless
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: driftless
+  template:
+    metadata:
+      labels:
+        app: driftless
+    spec:
+      containers:
+        - name: driftless
+          image: ghcr.io/quyumkehinde/driftless:latest
+          args: ["serve"]
+          # create the secret out of band:
+          #   kubectl create secret generic driftless \
+          #     --from-literal=DRIFTLESS_DATABASE_URL=postgres://... \
+          #     --from-literal=DRIFTLESS_STRIPE_API_KEY=rk_live_... \
+          #     --from-literal=DRIFTLESS_STRIPE_WEBHOOK_SECRET=whsec_...
+          envFrom:
+            - secretRef:
+                name: driftless
+          ports:
+            - name: ingest
+              containerPort: 8724
+            - name: metrics
+              containerPort: 8725
+          # liveness on the ingest listener; readiness only on the metrics
+          # listener. Do not point probes or load balancer checks at the
+          # webhook path itself.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: ingest
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: driftless
+  labels:
+    app: driftless
+spec:
+  selector:
+    app: driftless
+  ports:
+    - name: ingest
+      port: 8724
+      targetPort: ingest
+    - name: metrics
+      port: 8725
+      targetPort: metrics
+---
+# Prometheus Operator scrape example.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: driftless
+  labels:
+    app: driftless
+spec:
+  selector:
+    matchLabels:
+      app: driftless
+  endpoints:
+    - port: metrics
+      interval: 30s

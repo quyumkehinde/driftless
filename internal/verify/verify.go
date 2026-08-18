@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/quyumkehinde/driftless/internal/mirror"
 	"github.com/quyumkehinde/driftless/internal/obs"
@@ -102,15 +103,39 @@ type Report struct {
 // Progress receives a line per finished type; nil is silent.
 type Progress func(objectType string, checked, drifted int)
 
+// Metrics holds the verify prometheus instruments; long-running processes
+// register them, one-shot CLI runs pass nil.
+type Metrics struct {
+	Drift   *prometheus.GaugeVec
+	LastRun *prometheus.GaugeVec
+}
+
+// NewMetrics registers the verify metric families on reg.
+func NewMetrics(reg *prometheus.Registry) *Metrics {
+	m := &Metrics{
+		Drift: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "driftless_verify_drift_total",
+			Help: "Drifted objects found by the most recent verification, by type.",
+		}, []string{"type"}),
+		LastRun: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "driftless_verify_last_run_timestamp",
+			Help: "Unix time of the last completed verification, by mode.",
+		}, []string{"mode"}),
+	}
+	reg.MustRegister(m.Drift, m.LastRun)
+	return m
+}
+
 // Runner drives verification passes.
 type Runner struct {
 	pool     *pgxpool.Pool
 	client   *stripeapi.Client
 	logger   *slog.Logger
 	progress Progress
+	metrics  *Metrics
 }
 
-// NewRunner wires a verify runner. progress may be nil.
+// NewRunner wires a verify runner. progress and metrics may be nil.
 func NewRunner(pool *pgxpool.Pool, client *stripeapi.Client, logger *slog.Logger, progress Progress) *Runner {
 	return &Runner{
 		pool:     pool,
@@ -118,6 +143,12 @@ func NewRunner(pool *pgxpool.Pool, client *stripeapi.Client, logger *slog.Logger
 		logger:   obs.WithComponent(logger, "verify"),
 		progress: progress,
 	}
+}
+
+// WithMetrics attaches instruments updated after every completed run.
+func (r *Runner) WithMetrics(m *Metrics) *Runner {
+	r.metrics = m
+	return r
 }
 
 // Plan validates and orders the requested types, so callers can reject
@@ -202,6 +233,12 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*Report, error) {
 		Report:   detail,
 	}); err != nil {
 		return nil, err
+	}
+	if r.metrics != nil {
+		for _, tr := range report.Types {
+			r.metrics.Drift.WithLabelValues(tr.ObjectType).Set(float64(tr.Drifted))
+		}
+		r.metrics.LastRun.WithLabelValues(mode).SetToCurrentTime()
 	}
 	return report, nil
 }

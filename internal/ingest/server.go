@@ -30,9 +30,10 @@ const unhandledWarnInterval = time.Hour
 
 // Metrics holds the ingest prometheus instruments.
 type Metrics struct {
-	Events     *prometheus.CounterVec
-	AckSeconds prometheus.Histogram
-	Unhandled  *prometheus.CounterVec
+	Events      *prometheus.CounterVec
+	AckSeconds  prometheus.Histogram
+	Unhandled   *prometheus.CounterVec
+	DeliveryLag prometheus.Histogram
 }
 
 // NewMetrics registers the ingest metric families on reg.
@@ -51,8 +52,16 @@ func NewMetrics(reg *prometheus.Registry) *Metrics {
 			Name: "driftless_events_unhandled_total",
 			Help: "Stored events whose type maps to no object.",
 		}, []string{"type"}),
+		// The is-Stripe-delivery-healthy signal: event creation to webhook
+		// arrival, so it excludes swept and backfilled events. Buckets span
+		// seconds (normal) to Stripe's three-day retry window.
+		DeliveryLag: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "driftless_delivery_lag_seconds",
+			Help:    "Time from Stripe event creation to webhook receipt.",
+			Buckets: prometheus.ExponentialBuckets(1, 2, 18),
+		}),
 	}
-	reg.MustRegister(m.Events, m.AckSeconds, m.Unhandled)
+	reg.MustRegister(m.Events, m.AckSeconds, m.Unhandled, m.DeliveryLag)
 	return m
 }
 
@@ -145,6 +154,9 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	if inserted {
 		s.count("inserted")
+		if s.metrics != nil {
+			s.metrics.DeliveryLag.Observe(time.Since(time.Unix(event.Created, 0)).Seconds())
+		}
 	} else {
 		s.count("duplicate")
 	}

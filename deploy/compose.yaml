@@ -1,0 +1,43 @@
+# Quickstart deployment: driftless + Postgres 17.
+#
+#   cp .env.example .env   # fill in your Stripe keys
+#   docker compose up -d
+#   docker compose exec driftless driftless init
+#
+# The ingest port (8724) must be reachable by Stripe's webhook delivery;
+# put it behind your TLS-terminating proxy and point the webhook endpoint
+# at https://your-host/webhooks/stripe.
+services:
+  driftless:
+    image: ghcr.io/quyumkehinde/driftless:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DRIFTLESS_DATABASE_URL: postgres://${POSTGRES_USER:-driftless}:${POSTGRES_PASSWORD:-driftless}@postgres:5432/${POSTGRES_DB:-driftless}?sslmode=disable
+    ports:
+      - "8724:8724" # webhook ingest
+      - "8725:8725" # metrics, readyz, pprof (keep internal)
+    command: ["serve"]
+
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    # user, database, and password default to driftless; override any of
+    # them in .env and the connection URL above follows automatically
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-driftless}
+      POSTGRES_USER: ${POSTGRES_USER:-driftless}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-driftless}
+    volumes:
+      - driftless-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-driftless} -d ${POSTGRES_DB:-driftless}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  driftless-pgdata:

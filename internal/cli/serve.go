@@ -142,7 +142,7 @@ func runServe(cmd *cobra.Command, cfg *config.Config, pool *pgxpool.Pool, forceA
 		go resumeInterruptedBackfills(ctx, pool, runner, logger)
 	}
 	if cfg.Verify.Auto {
-		verifier := verify.NewRunner(pool, client, logger, nil)
+		verifier := verify.NewRunner(pool, client, logger, nil).WithMetrics(verify.NewMetrics(registry))
 		go runAutoVerify(ctx, pool, verifier, cfg.Verify.AutoTime, logger)
 	}
 	if cfg.Retention.EventsDays > 0 {

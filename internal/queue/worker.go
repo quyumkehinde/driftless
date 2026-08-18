@@ -20,10 +20,9 @@ type Applier interface {
 
 // Metrics holds the queue's prometheus instruments.
 type Metrics struct {
-	Processed   *prometheus.CounterVec
-	Dead        prometheus.Counter
-	Jobs        *prometheus.GaugeVec
-	DeliveryLag prometheus.Histogram
+	Processed *prometheus.CounterVec
+	Dead      prometheus.Counter
+	Jobs      *prometheus.GaugeVec
 }
 
 // NewMetrics registers the queue metric families on reg.
@@ -41,15 +40,8 @@ func NewMetrics(reg *prometheus.Registry) *Metrics {
 			Name: "driftless_jobs_total",
 			Help: "Jobs currently in the queue by status.",
 		}, []string{"status"}),
-		// Lag spans milliseconds (live webhooks) to many minutes (retries,
-		// outage recovery): 100ms doubling out to ~55 minutes.
-		DeliveryLag: prometheus.NewHistogram(prometheus.HistogramOpts{
-			Name:    "driftless_delivery_lag_seconds",
-			Help:    "Time from Stripe event creation to the mirror applying it.",
-			Buckets: prometheus.ExponentialBuckets(0.1, 2, 16),
-		}),
 	}
-	reg.MustRegister(m.Processed, m.Dead, m.Jobs, m.DeliveryLag)
+	reg.MustRegister(m.Processed, m.Dead, m.Jobs)
 	return m
 }
 
@@ -159,12 +151,7 @@ func (w *WorkerPool) process(ctx context.Context, job Job) {
 		w.logger.Debug("job requeued for newer coalesced event", "job_id", job.ID)
 		return
 	}
-	w.withMetrics(func(m *Metrics) {
-		m.Processed.WithLabelValues("done").Inc()
-		if job.LatestEventCreated != nil {
-			m.DeliveryLag.Observe(time.Since(*job.LatestEventCreated).Seconds())
-		}
-	})
+	w.withMetrics(func(m *Metrics) { m.Processed.WithLabelValues("done").Inc() })
 }
 
 func (w *WorkerPool) withMetrics(f func(*Metrics)) {

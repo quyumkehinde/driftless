@@ -1,0 +1,31 @@
+# Single-binary deployment on a VM.
+#
+#   install -m 0755 driftless /usr/local/bin/driftless
+#   install -m 0640 driftless.env /etc/driftless/driftless.env
+#   install -m 0644 driftless.service /etc/systemd/system/driftless.service
+#   systemctl enable --now driftless
+#
+# /etc/driftless/driftless.env holds DRIFTLESS_DATABASE_URL,
+# DRIFTLESS_STRIPE_API_KEY, and DRIFTLESS_STRIPE_WEBHOOK_SECRET.
+[Unit]
+Description=Driftless Stripe mirror
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=/usr/local/bin/driftless migrate up
+ExecStart=/usr/local/bin/driftless serve
+EnvironmentFile=/etc/driftless/driftless.env
+Restart=on-failure
+RestartSec=5
+User=driftless
+Group=driftless
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

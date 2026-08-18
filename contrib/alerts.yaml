@@ -1,0 +1,68 @@
+# Prometheus alerting rules for driftless. Tune the thresholds to taste;
+# the runbook annotations state what each alert means and the first
+# command to run.
+groups:
+  - name: driftless
+    rules:
+      - alert: DriftlessGapRiskCliff
+        expr: driftless_sweep_gap_risk == 1
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: Sweep window is approaching the 30-day event retention cliff
+          runbook: >-
+            The sweeper's checkpoint reaches back close to Stripe's event
+            retention limit; older gaps are becoming unrecoverable from the
+            events API. Run: driftless status, then driftless backfill
+            --since <cliff date> to resync by object instead of by event.
+
+      - alert: DriftlessSweeperStuck
+        expr: time() - driftless_last_sweep_timestamp > 3 * 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: No successful sweep for over three intervals
+          runbook: >-
+            Sweeps are failing or the process holding the sweep leader lock
+            is wedged. Check serve logs for "sweep failed", then
+            driftless status. The interval factor assumes the default 5m
+            sweep.interval; adjust if configured differently.
+
+      - alert: DriftlessDeadJobs
+        expr: rate(driftless_jobs_dead_total[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: Jobs are exhausting their retry budget
+          runbook: >-
+            Some objects repeatedly fail to apply. Run: driftless jobs list
+            --status dead to see the errors, fix the cause, then
+            driftless jobs retry --all-dead.
+
+      - alert: DriftlessWebhooksSilent
+        expr: >-
+          sum(rate(driftless_ingest_events_total{result="inserted"}[1h])) == 0
+          and sum(rate(driftless_gap_events_total[1h])) > 0
+        labels:
+          severity: page
+        annotations:
+          summary: Stripe generates events but none arrive as webhooks
+          runbook: >-
+            The classic wrong-endpoint-URL misconfiguration; serve also
+            logs this as CRITICAL. The sweeper is healing the data, but
+            delivery is down. Check the webhook endpoint URL and its
+            signing secret in the Stripe dashboard, then driftless doctor.
+
+      - alert: DriftlessDriftFound
+        expr: sum(driftless_verify_drift_total) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: The nightly verification found drifted objects
+          runbook: >-
+            The mirror diverged from Stripe. Run: driftless verify --full
+            for the exact set, then driftless verify --full --repair to fix
+            it. Recurring drift usually means undelivered webhooks; check
+            DriftlessWebhooksSilent and the sweeper's health.
