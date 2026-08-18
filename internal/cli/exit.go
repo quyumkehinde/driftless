@@ -33,6 +33,24 @@ func (e *MigrationsPendingError) Error() string {
 // ExitCode returns the exit code for pending migrations.
 func (e *MigrationsPendingError) ExitCode() int { return 4 }
 
+// DriftError is returned when verify finds diverged objects: exit code 3,
+// the code CI pipelines gate on. Repaired drift still exits 3; the next
+// clean verify proves the repair.
+type DriftError struct {
+	Drifted  int
+	Repaired int
+}
+
+func (e *DriftError) Error() string {
+	if e.Repaired > 0 {
+		return fmt.Sprintf("verify: %d object(s) drifted, %d repaired", e.Drifted, e.Repaired)
+	}
+	return fmt.Sprintf("verify: %d object(s) drifted", e.Drifted)
+}
+
+// ExitCode returns the exit code for found drift.
+func (e *DriftError) ExitCode() int { return 3 }
+
 // exitCode maps an error returned by cobra to the documented exit code.
 func exitCode(err error) int {
 	if err == nil {

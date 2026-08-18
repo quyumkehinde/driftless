@@ -98,6 +98,15 @@ func (s *Server) putLocked(objectType, id string, obj map[string]any, eventType 
 	}
 	copied["id"] = id
 	copied["object"] = objectType
+	// every real Stripe object carries its creation time; updates keep the
+	// original, the way Stripe does
+	if copied["created"] == nil {
+		if existing := s.objects[objectType][id]; existing != nil && existing["created"] != nil {
+			copied["created"] = existing["created"]
+		} else {
+			copied["created"] = s.clock.Unix()
+		}
+	}
 
 	if s.objects[objectType] == nil {
 		s.objects[objectType] = make(map[string]map[string]any)

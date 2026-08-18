@@ -48,6 +48,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newServeCmd(flags))
 	root.AddCommand(newBackfillCmd(flags))
 	root.AddCommand(newInitCmd(flags))
+	root.AddCommand(newVerifyCmd(flags))
 
 	return root
 }

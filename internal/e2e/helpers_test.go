@@ -5,6 +5,7 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -269,8 +270,25 @@ func startCLI(t *testing.T, binary, connString, apiBaseURL string, args ...strin
 
 // Wait blocks until the process exits, returning its success.
 func (p *cliProc) Wait() bool {
+	return p.WaitCode() == 0
+}
+
+// WaitCode blocks until the process exits and returns its exit code.
+func (p *cliProc) WaitCode() int {
 	err := p.cmd.Wait()
-	return err == nil
+	if err == nil {
+		return 0
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	return -1
+}
+
+// Output returns everything the process wrote so far.
+func (p *cliProc) Output() string {
+	return p.output.String()
 }
 
 // Kill9 kills the process without ceremony.

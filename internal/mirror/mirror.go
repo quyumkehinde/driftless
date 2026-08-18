@@ -51,6 +51,13 @@ var tables = map[string]string{
 	stripeapi.ObjectCheckoutSession:  "stripe.checkout_sessions",
 }
 
+// Table returns the mirror table for an object type. Callers embedding it
+// in SQL must take the name from here and never from input.
+func Table(objectType string) (string, bool) {
+	table, ok := tables[objectType]
+	return table, ok
+}
+
 // LockObject takes the per-object advisory lock inside tx, serializing
 // every writer of one object across all processes. Apply and backfill
 // must build the identical key or their mutual exclusion silently stops
