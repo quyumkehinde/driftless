@@ -43,7 +43,7 @@ CREATE TABLE driftless.jobs (
 -- Coalescing key: at most one live job per object.
 CREATE UNIQUE INDEX jobs_live_object ON driftless.jobs (object_type, object_id)
   WHERE status IN ('pending','running');
-CREATE INDEX jobs_claim ON driftless.jobs (status, run_after, priority, id)
+CREATE INDEX jobs_claim ON driftless.jobs (priority, id)
   WHERE status = 'pending';
 
 -- Per-object bookkeeping (what do we believe, when did we last confirm it).

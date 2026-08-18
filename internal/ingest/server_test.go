@@ -24,7 +24,7 @@ import (
 func newTestServer(t *testing.T) (*httptest.Server, *pgxpool.Pool, *Metrics) {
 	t.Helper()
 	pool := testpg.Start(t)
-	q := queue.New(pool, 2*time.Minute)
+	q := queue.New(pool, 2*time.Minute, 8)
 	verifier := NewVerifier(testSecret, "", tolerance)
 	metrics := NewMetrics(prometheus.NewRegistry())
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))

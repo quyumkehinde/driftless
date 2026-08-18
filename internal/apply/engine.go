@@ -76,7 +76,7 @@ func (e *Engine) Apply(ctx context.Context, job queue.Job) error {
 		mode = mirror.SyncSourcePayload
 	}
 	err := pgx.BeginFunc(ctx, e.pool, func(tx pgx.Tx) error {
-		if err := acquireObjectLock(ctx, tx, job.ObjectType, job.ObjectID); err != nil {
+		if err := mirror.LockObject(ctx, tx, job.ObjectType, job.ObjectID); err != nil {
 			return err
 		}
 		if err := e.applyLocked(ctx, tx, job); err != nil {
@@ -85,19 +85,33 @@ func (e *Engine) Apply(ctx context.Context, job queue.Job) error {
 		crashpoint.Maybe("apply.before-commit")
 		return nil
 	})
+	// The failure counter runs only after BeginFunc has returned and
+	// released the transaction's connection: acquiring a second pooled
+	// connection while holding the first deadlocks the whole worker pool
+	// once every worker hits a correlated Stripe failure at once.
+	var fetchFailure *fetchError
+	if errors.As(err, &fetchFailure) {
+		if _, bumpErr := db.New(e.pool).BumpFetchFailures(ctx, db.BumpFetchFailuresParams{
+			ObjectType: job.ObjectType, ObjectID: job.ObjectID,
+		}); bumpErr != nil {
+			e.logger.Warn("recording fetch failure failed", "error", bumpErr)
+		}
+		err = fetchFailure.err
+	}
 	if e.metrics != nil {
 		e.metrics.ApplySeconds.WithLabelValues(mode).Observe(time.Since(start).Seconds())
 	}
 	return err
 }
 
-// acquireObjectLock serializes concurrent applies to one object across all
-// processes sharing the database.
-func acquireObjectLock(ctx context.Context, tx pgx.Tx, objectType, objectID string) error {
-	_, err := tx.Exec(ctx,
-		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, objectType+":"+objectID)
-	return err
+// fetchError marks a Stripe fetch failure so Apply can record it after the
+// transaction's connection is released.
+type fetchError struct {
+	err error
 }
+
+func (e *fetchError) Error() string { return e.err.Error() }
+func (e *fetchError) Unwrap() error { return e.err }
 
 func (e *Engine) applyLocked(ctx context.Context, tx pgx.Tx, job queue.Job) error {
 	q := db.New(tx)
@@ -128,13 +142,7 @@ func (e *Engine) applyLocked(ctx context.Context, tx pgx.Tx, job queue.Job) erro
 		return e.finishSoftDelete(ctx, tx, job)
 	}
 	if err != nil {
-		// Outside the doomed transaction, count the failure for status.
-		if _, bumpErr := db.New(e.pool).BumpFetchFailures(ctx, db.BumpFetchFailuresParams{
-			ObjectType: job.ObjectType, ObjectID: job.ObjectID,
-		}); bumpErr != nil {
-			e.logger.Warn("recording fetch failure failed", "error", bumpErr)
-		}
-		return err
+		return &fetchError{err: err}
 	}
 
 	if job.ObjectType == stripeapi.ObjectSubscription {

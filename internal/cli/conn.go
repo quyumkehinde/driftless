@@ -65,7 +65,15 @@ func openPool(cmd *cobra.Command, flags *rootFlags, scope config.Scope) (*config
 	if err != nil {
 		return nil, nil, err
 	}
-	pool, err := pgxpool.New(cmd.Context(), cfg.DatabaseURL)
+	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open database: %w", err)
+	}
+	// Workers each hold a connection across a full apply transaction, and
+	// backfill, the reaper, readiness, and ingest all need their own;
+	// pgxpool's default of max(4, NumCPU) deadlocks under that load.
+	poolCfg.MaxConns = max(int32(cfg.Workers.Count)+10, 16)
+	pool, err := pgxpool.NewWithConfig(cmd.Context(), poolCfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open database: %w", err)
 	}
@@ -84,5 +92,5 @@ func openQueue(cmd *cobra.Command, flags *rootFlags) (*pgxpool.Pool, *queue.Queu
 	if err != nil {
 		return nil, nil, err
 	}
-	return pool, queue.New(pool, cfg.Workers.VisibilityTimeout.Std()), nil
+	return pool, queue.New(pool, cfg.Workers.VisibilityTimeout.Std(), cfg.Workers.MaxAttempts), nil
 }

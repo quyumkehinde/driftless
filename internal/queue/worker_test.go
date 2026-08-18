@@ -23,7 +23,7 @@ func discardLogger() *slog.Logger {
 
 func TestWorkerPoolProcessesJobs(t *testing.T) {
 	pool := testpg.Start(t)
-	q := New(pool, 2*time.Minute)
+	q := New(pool, 2*time.Minute, 8)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

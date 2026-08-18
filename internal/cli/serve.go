@@ -78,7 +78,7 @@ func runServe(cmd *cobra.Command, cfg *config.Config, pool *pgxpool.Pool) error 
 		cfg.Stripe.WebhookSecretSecondary,
 		cfg.Stripe.SignatureTolerance.Std(),
 	)
-	q := queue.New(pool, cfg.Workers.VisibilityTimeout.Std())
+	q := queue.New(pool, cfg.Workers.VisibilityTimeout.Std(), cfg.Workers.MaxAttempts)
 	ingestServer := ingest.NewServer(pool, q, verifier, logger, ingest.NewMetrics(registry))
 
 	limiter := stripeapi.NewLimiter(cfg.Stripe.APIRPS)
@@ -167,12 +167,16 @@ func resumeInterruptedBackfills(ctx context.Context, pool *pgxpool.Pool, runner 
 		return
 	}
 	for _, run := range runs {
+		if ctx.Err() != nil {
+			return
+		}
 		logger.Info("auto-resuming backfill run", "run_id", run.ID)
 		if err := runner.Resume(ctx, run.ID); err != nil {
 			if ctx.Err() == nil {
+				// one held or failing run must not abandon the others
 				logger.Error("backfill auto-resume failed", "run_id", run.ID, "error", err)
 			}
-			return
+			continue
 		}
 	}
 }
@@ -189,15 +193,18 @@ func runReaper(ctx context.Context, q *queue.Queue, visibilityTimeout time.Durat
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			n, err := q.Reap(ctx)
+			resurrected, dead, err := q.Reap(ctx)
 			if err != nil {
 				if ctx.Err() == nil {
 					logger.Error("reaper failed", "error", err)
 				}
 				continue
 			}
-			if n > 0 {
-				logger.Warn("resurrected expired job claims", "count", n)
+			if resurrected > 0 {
+				logger.Warn("resurrected expired job claims", "count", resurrected)
+			}
+			if dead > 0 {
+				logger.Error("dead-lettered jobs with expired claims and exhausted budgets", "count", dead)
 			}
 		}
 	}

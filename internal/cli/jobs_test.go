@@ -29,7 +29,7 @@ func runCLI(t *testing.T, connString string, args ...string) (string, error) {
 
 func TestJobsListAndRetry(t *testing.T) {
 	pool, connString := testpg.StartWithURL(t)
-	q := queue.New(pool, 2*time.Minute)
+	q := queue.New(pool, 2*time.Minute, 8)
 	ctx := context.Background()
 
 	// seed one job and kill it

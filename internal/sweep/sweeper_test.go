@@ -24,7 +24,7 @@ func newTestSweeper(t *testing.T) (*Sweeper, *fakestripe.Server, *pgxpool.Pool, 
 	client := stripeapi.New(fs.URL(), "rk_test_sweep", limiter, nil)
 	logBuf := &strings.Builder{}
 	logger := slog.New(slog.NewJSONHandler(logBuf, nil))
-	q := queue.New(pool, 2*time.Minute)
+	q := queue.New(pool, 2*time.Minute, 8)
 	return New(pool, client, q, logger, nil, 10*time.Minute, 24*time.Hour), fs, pool, logBuf
 }
 

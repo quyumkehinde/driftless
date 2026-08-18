@@ -33,7 +33,7 @@ func enqueue(t *testing.T, pool *pgxpool.Pool, q *Queue, p EnqueueParams) (int64
 
 func TestEnqueueCoalesces(t *testing.T) {
 	pool := testpg.Start(t)
-	q := New(pool, 2*time.Minute)
+	q := New(pool, 2*time.Minute, 8)
 	ctx := context.Background()
 
 	base := time.Now().UTC().Truncate(time.Second)
@@ -95,7 +95,7 @@ func TestEnqueueCoalesces(t *testing.T) {
 
 func TestCoalescingBoundsFetches(t *testing.T) {
 	pool := testpg.Start(t)
-	q := New(pool, 2*time.Minute)
+	q := New(pool, 2*time.Minute, 8)
 	ctx := context.Background()
 
 	base := time.Now().UTC().Truncate(time.Second)
@@ -158,7 +158,7 @@ func TestCoalescingBoundsFetches(t *testing.T) {
 
 func TestNoDoubleClaimUnderConcurrency(t *testing.T) {
 	pool := testpg.Start(t)
-	q := New(pool, 2*time.Minute)
+	q := New(pool, 2*time.Minute, 8)
 	ctx := context.Background()
 
 	const jobCount = 200
@@ -219,7 +219,7 @@ func TestNoDoubleClaimUnderConcurrency(t *testing.T) {
 
 func TestFailBackoffAndDeadLetter(t *testing.T) {
 	pool := testpg.Start(t)
-	q := New(pool, 2*time.Minute)
+	q := New(pool, 2*time.Minute, 8)
 	ctx := context.Background()
 
 	enqueue(t, pool, q, EnqueueParams{
@@ -291,7 +291,7 @@ func TestFailBackoffAndDeadLetter(t *testing.T) {
 
 func TestReaperResurrectsExpiredClaims(t *testing.T) {
 	pool := testpg.Start(t)
-	q := New(pool, 2*time.Minute)
+	q := New(pool, 2*time.Minute, 8)
 	ctx := context.Background()
 
 	enqueue(t, pool, q, EnqueueParams{
@@ -305,9 +305,9 @@ func TestReaperResurrectsExpiredClaims(t *testing.T) {
 	}
 
 	// claim still fresh: reaper must not touch it
-	n, err := q.Reap(ctx)
-	if err != nil || n != 0 {
-		t.Fatalf("reap fresh claim: n=%d err=%v", n, err)
+	resurrected, dead, err := q.Reap(ctx)
+	if err != nil || resurrected != 0 || dead != 0 {
+		t.Fatalf("reap fresh claim: resurrected=%d dead=%d err=%v", resurrected, dead, err)
 	}
 
 	// force the visibility timeout to expire
@@ -315,9 +315,9 @@ func TestReaperResurrectsExpiredClaims(t *testing.T) {
 		`UPDATE driftless.jobs SET claimed_until = now() - interval '1 second' WHERE id = $1`, job.ID); err != nil {
 		t.Fatal(err)
 	}
-	n, err = q.Reap(ctx)
-	if err != nil || n != 1 {
-		t.Fatalf("reap expired claim: n=%d err=%v", n, err)
+	resurrected, dead, err = q.Reap(ctx)
+	if err != nil || resurrected != 1 || dead != 0 {
+		t.Fatalf("reap expired claim: resurrected=%d dead=%d err=%v", resurrected, dead, err)
 	}
 
 	// the job is claimable again
@@ -335,7 +335,7 @@ func TestReaperResurrectsExpiredClaims(t *testing.T) {
 
 func TestReaperDeadLettersCrashLoops(t *testing.T) {
 	pool := testpg.Start(t)
-	q := New(pool, 2*time.Minute)
+	q := New(pool, 2*time.Minute, 8)
 	ctx := context.Background()
 
 	enqueue(t, pool, q, EnqueueParams{
@@ -352,7 +352,7 @@ func TestReaperDeadLettersCrashLoops(t *testing.T) {
 			`UPDATE driftless.jobs SET claimed_until = now() - interval '1 second' WHERE id = $1`, job.ID); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := q.Reap(ctx); err != nil {
+		if _, _, err := q.Reap(ctx); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -363,5 +363,63 @@ func TestReaperDeadLettersCrashLoops(t *testing.T) {
 	}
 	if counts["dead"] != 1 {
 		t.Errorf("counts = %v, want the crash-looping job dead", counts)
+	}
+}
+
+func TestCompleteRequeueResetsAttempts(t *testing.T) {
+	pool := testpg.Start(t)
+	q := New(pool, 2*time.Minute, 8)
+	ctx := context.Background()
+
+	base := time.Now().UTC().Truncate(time.Second)
+	enqueue(t, pool, q, EnqueueParams{
+		ObjectType: "subscription", ObjectID: "sub_r", EventID: "evt_1", EventCreated: base,
+	})
+	job, ok, err := q.Claim(ctx)
+	if err != nil || !ok {
+		t.Fatalf("claim: ok=%v err=%v", ok, err)
+	}
+	// a newer event coalesces while the job runs; the requeue that follows
+	// is a successful pass, not a failed attempt
+	enqueue(t, pool, q, EnqueueParams{
+		ObjectType: "subscription", ObjectID: "sub_r", EventID: "evt_2", EventCreated: base.Add(time.Second),
+	})
+	requeued, err := q.Complete(ctx, job)
+	if err != nil || !requeued {
+		t.Fatalf("requeued=%v err=%v", requeued, err)
+	}
+
+	again, ok, err := q.Claim(ctx)
+	if err != nil || !ok {
+		t.Fatalf("re-claim: ok=%v err=%v", ok, err)
+	}
+	if again.Attempts != 1 {
+		t.Errorf("attempts after requeue = %d, want 1: requeues must not burn the retry budget", again.Attempts)
+	}
+}
+
+func TestEnqueueStampsConfiguredMaxAttempts(t *testing.T) {
+	pool := testpg.Start(t)
+	q := New(pool, 2*time.Minute, 3)
+	ctx := context.Background()
+
+	enqueue(t, pool, q, EnqueueParams{
+		ObjectType: "customer", ObjectID: "cus_ma", EventID: "evt_1", EventCreated: time.Now().UTC(),
+	})
+	for attempt := 1; attempt <= 3; attempt++ {
+		if _, err := pool.Exec(ctx, `UPDATE driftless.jobs SET run_after = now()`); err != nil {
+			t.Fatal(err)
+		}
+		job, ok, err := q.Claim(ctx)
+		if err != nil || !ok {
+			t.Fatalf("attempt %d: ok=%v err=%v", attempt, ok, err)
+		}
+		dead, err := q.Fail(ctx, job, errors.New("boom"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if wantDead := attempt == 3; dead != wantDead {
+			t.Errorf("attempt %d: dead=%v, want %v: configured max_attempts must stick", attempt, dead, wantDead)
+		}
 	}
 }

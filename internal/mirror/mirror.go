@@ -42,6 +42,16 @@ var tables = map[string]string{
 	stripeapi.ObjectCheckoutSession:  "stripe.checkout_sessions",
 }
 
+// LockObject takes the per-object advisory lock inside tx, serializing
+// every writer of one object across all processes. Apply and backfill
+// must build the identical key or their mutual exclusion silently stops
+// working, which is why the key lives here and nowhere else.
+func LockObject(ctx context.Context, tx pgx.Tx, objectType, id string) error {
+	_, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, objectType+":"+id)
+	return err
+}
+
 // UpsertObject writes a freshly fetched object. Last-writer-wins is safe
 // because every writer holds the per-object advisory lock and writes a
 // fresh fetch; a resurrected id also clears the soft-delete flags.
@@ -76,6 +86,16 @@ func SoftDeleteObject(ctx context.Context, tx pgx.Tx, objectType, id string) err
 		WHERE id = $1 AND NOT is_deleted`, table), id)
 	if err != nil {
 		return fmt.Errorf("mirror: soft delete %s %s: %w", objectType, id, err)
+	}
+	// a deleted subscription's items are gone with it; leaving them live
+	// is the entitlement-phantom mirror of the truncation bug class
+	if objectType == stripeapi.ObjectSubscription {
+		if _, err := tx.Exec(ctx, `
+			UPDATE stripe.subscription_items
+			SET is_deleted = true, deleted_at = now(), updated_at = now()
+			WHERE subscription = $1 AND NOT is_deleted`, id); err != nil {
+			return fmt.Errorf("mirror: soft delete items of %s: %w", id, err)
+		}
 	}
 	return nil
 }

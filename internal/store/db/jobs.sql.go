@@ -63,6 +63,15 @@ SET status = CASE
       THEN 'pending'
       ELSE 'done'
     END,
+    attempts = CASE
+      WHEN COALESCE(latest_event_created, '-infinity'::timestamptz)
+           > COALESCE($2::timestamptz, '-infinity'::timestamptz)
+        OR (COALESCE(latest_event_created, '-infinity'::timestamptz)
+            = COALESCE($2::timestamptz, '-infinity'::timestamptz)
+            AND COALESCE(latest_event_id, '') > COALESCE($3::text, ''))
+      THEN 0
+      ELSE attempts
+    END,
     run_after = now(),
     claimed_until = NULL,
     updated_at = now()
@@ -116,8 +125,8 @@ func (q *Queries) CountJobsByStatus(ctx context.Context) ([]CountJobsByStatusRow
 }
 
 const enqueueJob = `-- name: EnqueueJob :one
-INSERT INTO driftless.jobs (kind, object_type, object_id, latest_event_id, latest_event_created, priority)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO driftless.jobs (kind, object_type, object_id, latest_event_id, latest_event_created, priority, max_attempts)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (object_type, object_id) WHERE status IN ('pending','running')
 DO UPDATE SET
   latest_event_id = CASE
@@ -139,6 +148,7 @@ type EnqueueJobParams struct {
 	LatestEventID      *string
 	LatestEventCreated *time.Time
 	Priority           int16
+	MaxAttempts        int32
 }
 
 type EnqueueJobRow struct {
@@ -157,6 +167,7 @@ func (q *Queries) EnqueueJob(ctx context.Context, arg EnqueueJobParams) (Enqueue
 		arg.LatestEventID,
 		arg.LatestEventCreated,
 		arg.Priority,
+		arg.MaxAttempts,
 	)
 	var i EnqueueJobRow
 	err := row.Scan(&i.ID, &i.Inserted)
@@ -235,22 +246,42 @@ func (q *Queries) ListJobs(ctx context.Context, arg ListJobsParams) ([]Driftless
 	return items, nil
 }
 
-const reapExpiredJobs = `-- name: ReapExpiredJobs :execrows
+const reapExpiredJobs = `-- name: ReapExpiredJobs :many
 UPDATE driftless.jobs
 SET status = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'pending' END,
     claimed_until = NULL,
     last_error = COALESCE(last_error, 'worker crashed or lost its claim'),
     updated_at = now()
 WHERE status = 'running' AND claimed_until < now()
+RETURNING id, status
 `
 
-// Resurrect jobs whose worker died without completing or failing them.
-func (q *Queries) ReapExpiredJobs(ctx context.Context) (int64, error) {
-	result, err := q.db.Exec(ctx, reapExpiredJobs)
+type ReapExpiredJobsRow struct {
+	ID     int64
+	Status string
+}
+
+// Resurrect jobs whose worker died without completing or failing them;
+// rows that exhausted their budget dead-letter instead, and the returned
+// statuses let the caller report the two outcomes separately.
+func (q *Queries) ReapExpiredJobs(ctx context.Context) ([]ReapExpiredJobsRow, error) {
+	rows, err := q.db.Query(ctx, reapExpiredJobs)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return result.RowsAffected(), nil
+	defer rows.Close()
+	var items []ReapExpiredJobsRow
+	for rows.Next() {
+		var i ReapExpiredJobsRow
+		if err := rows.Scan(&i.ID, &i.Status); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const retryDeadJobs = `-- name: RetryDeadJobs :execrows

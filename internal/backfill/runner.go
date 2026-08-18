@@ -317,15 +317,28 @@ func (r *Runner) runPaymentMethods(ctx context.Context, task db.DriftlessBackfil
 
 	for _, customer := range customers {
 		query := url.Values{"limit": {strconv.Itoa(pageLimit)}}
-		page, err := r.fetchPage(ctx, "/v1/customers/"+url.PathEscape(customer)+"/payment_methods", query)
-		if err != nil {
-			return err
+		path := "/v1/customers/" + url.PathEscape(customer) + "/payment_methods"
+		for {
+			page, err := r.fetchPage(ctx, path, query)
+			if err != nil {
+				return err
+			}
+			_, count, err := r.commitPageWithCursor(ctx, task, page.Data, horizon, customer)
+			if err != nil {
+				return err
+			}
+			r.note(task.ObjectType, count)
+			if !page.HasMore || len(page.Data) == 0 {
+				break
+			}
+			var lastID struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal(page.Data[len(page.Data)-1], &lastID); err != nil {
+				return err
+			}
+			query.Set("starting_after", lastID.ID)
 		}
-		_, count, err := r.commitPageWithCursor(ctx, task, page.Data, horizon, customer)
-		if err != nil {
-			return err
-		}
-		r.note(task.ObjectType, count)
 	}
 	return db.New(r.pool).FinishBackfillTask(ctx, db.FinishBackfillTaskParams{
 		ID: task.ID, Status: "done",
@@ -333,7 +346,9 @@ func (r *Runner) runPaymentMethods(ctx context.Context, task db.DriftlessBackfil
 }
 
 // fetchPage lists one page at backfill priority, retrying past sustained
-// pressure instead of failing the task.
+// but transient pressure instead of failing the task. Terminal errors, a
+// revoked key or a rejected cursor, return immediately: retrying those
+// forever would pin the run lock and a connection for nothing.
 func (r *Runner) fetchPage(ctx context.Context, path string, query url.Values) (*stripeapi.ListPage, error) {
 	for {
 		page, err := r.client.List(ctx, stripeapi.PriorityBackfill, path, query)
@@ -343,6 +358,9 @@ func (r *Runner) fetchPage(ctx context.Context, path string, query url.Values) (
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
+		if !retryable(err) {
+			return nil, err
+		}
 		r.logger.Warn("page fetch failed, retrying", "path", path, "error", err)
 		select {
 		case <-ctx.Done():
@@ -350,6 +368,21 @@ func (r *Runner) fetchPage(ctx context.Context, path string, query url.Values) (
 		case <-time.After(pageRetryDelay):
 		}
 	}
+}
+
+// retryable reports whether an error class can heal on its own: rate
+// limiting, server errors, and network failures do; other API errors are
+// terminal.
+func retryable(err error) bool {
+	var apiErr *stripeapi.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.Status == 429 || apiErr.Status >= 500
+	}
+	var notFound *stripeapi.NotFoundError
+	if errors.As(err, &notFound) {
+		return false
+	}
+	return true // network-class errors
 }
 
 // commitPage upserts a page and advances the cursor in one transaction.
@@ -401,8 +434,7 @@ func (r *Runner) commitPageWithCursor(ctx context.Context, task db.DriftlessBack
 // newer than the run's start already updated it, in which case the page
 // item is a stale snapshot and is skipped.
 func (r *Runner) upsertGuarded(ctx context.Context, tx pgx.Tx, objectType, id string, item json.RawMessage, horizon time.Time) (bool, error) {
-	if _, err := tx.Exec(ctx,
-		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, objectType+":"+id); err != nil {
+	if err := mirror.LockObject(ctx, tx, objectType, id); err != nil {
 		return false, err
 	}
 
@@ -425,9 +457,10 @@ func (r *Runner) upsertGuarded(ctx context.Context, tx pgx.Tx, objectType, id st
 	}
 
 	if err := db.New(tx).UpsertObjectState(ctx, db.UpsertObjectStateParams{
-		ObjectType: objectType,
-		ObjectID:   id,
-		SyncSource: mirror.SyncSourceBackfill,
+		ObjectType:       objectType,
+		ObjectID:         id,
+		LastEventCreated: &horizon,
+		SyncSource:       mirror.SyncSourceBackfill,
 	}); err != nil {
 		return false, err
 	}

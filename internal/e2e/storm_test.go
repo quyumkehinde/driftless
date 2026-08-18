@@ -38,7 +38,7 @@ func Test429Storm(t *testing.T) {
 	client := stripeapi.New(fs.URL(), "rk_test_storm", limiter, nil)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	q := queue.New(pool, 2*time.Minute)
+	q := queue.New(pool, 2*time.Minute, 8)
 	engine := apply.NewEngine(pool, client, nil, logger, nil)
 	workers := queue.NewWorkerPool(q, engine, 4, 20*time.Millisecond, logger, nil)
 	workersDone := make(chan struct{})

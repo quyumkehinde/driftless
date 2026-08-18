@@ -31,12 +31,15 @@ var backoffSchedule = []time.Duration{
 type Queue struct {
 	pool              *pgxpool.Pool
 	visibilityTimeout time.Duration
+	maxAttempts       int32
 }
 
 // New builds a Queue. visibilityTimeout bounds how long a claimed job stays
-// invisible before the reaper hands it to another worker.
-func New(pool *pgxpool.Pool, visibilityTimeout time.Duration) *Queue {
-	return &Queue{pool: pool, visibilityTimeout: visibilityTimeout}
+// invisible before the reaper hands it to another worker; maxAttempts is
+// the retry budget stamped onto every enqueued job (0 keeps the schema
+// default).
+func New(pool *pgxpool.Pool, visibilityTimeout time.Duration, maxAttempts int) *Queue {
+	return &Queue{pool: pool, visibilityTimeout: visibilityTimeout, maxAttempts: int32(maxAttempts)}
 }
 
 // EnqueueParams describes one unit of work keyed by object.
@@ -60,11 +63,16 @@ func (q *Queue) Enqueue(ctx context.Context, tx pgx.Tx, p EnqueueParams) (id int
 	if p.Priority == 0 {
 		p.Priority = 100
 	}
+	maxAttempts := q.maxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 8
+	}
 	params := db.EnqueueJobParams{
-		Kind:       p.Kind,
-		ObjectType: p.ObjectType,
-		ObjectID:   p.ObjectID,
-		Priority:   p.Priority,
+		Kind:        p.Kind,
+		ObjectType:  p.ObjectType,
+		ObjectID:    p.ObjectID,
+		Priority:    p.Priority,
+		MaxAttempts: maxAttempts,
 	}
 	if p.EventID != "" {
 		params.LatestEventID = &p.EventID
@@ -123,10 +131,21 @@ func (q *Queue) Fail(ctx context.Context, job Job, cause error) (dead bool, err 
 }
 
 // Reap resurrects running jobs whose claim expired (a crashed worker) and
-// dead-letters any that already used their attempts. Returns how many rows
-// it touched.
-func (q *Queue) Reap(ctx context.Context) (int64, error) {
-	return db.New(q.pool).ReapExpiredJobs(ctx)
+// dead-letters any that already used their attempts, reporting the two
+// outcomes separately so silent dead-lettering is visible.
+func (q *Queue) Reap(ctx context.Context) (resurrected, dead int64, err error) {
+	rows, err := db.New(q.pool).ReapExpiredJobs(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, row := range rows {
+		if row.Status == "dead" {
+			dead++
+		} else {
+			resurrected++
+		}
+	}
+	return resurrected, dead, nil
 }
 
 // List returns up to limit jobs with the given status, oldest first.

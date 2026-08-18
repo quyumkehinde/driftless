@@ -32,7 +32,7 @@ func TestDefaults(t *testing.T) {
 		},
 		Workers: WorkersConfig{
 			Count:             8,
-			VisibilityTimeout: Duration(120 * time.Second),
+			VisibilityTimeout: Duration(300 * time.Second),
 			MaxAttempts:       8,
 		},
 		Sweep: SweepConfig{

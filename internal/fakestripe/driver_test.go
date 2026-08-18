@@ -23,7 +23,7 @@ const driverSecret = "whsec_driver_test"
 func startIngest(t *testing.T) (*httptest.Server, *pgxpool.Pool) {
 	t.Helper()
 	pool := testpg.Start(t)
-	q := queue.New(pool, 2*time.Minute)
+	q := queue.New(pool, 2*time.Minute, 8)
 	verifier := ingest.NewVerifier(driverSecret, "", 300*time.Second)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := httptest.NewServer(ingest.NewServer(pool, q, verifier, logger, nil).Handler())

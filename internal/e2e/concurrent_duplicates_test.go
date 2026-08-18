@@ -43,7 +43,7 @@ func TestConcurrentDuplicateDeliveries(t *testing.T) {
 	fs := fakestripe.New(t, e2eSecret)
 	event := fs.Put("customer", "cus_race", map[string]any{"email": "race@x.y"}, "customer.created")
 
-	q := queue.New(pool, 2*time.Minute)
+	q := queue.New(pool, 2*time.Minute, 8)
 	verifier := ingest.NewVerifier(e2eSecret, "", 300*time.Second)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := httptest.NewServer(ingest.NewServer(pool, q, verifier, logger, nil).Handler())

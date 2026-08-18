@@ -422,3 +422,96 @@ func TestApplySubscriptionPagesThroughItems(t *testing.T) {
 		t.Errorf("items mirrored = %d, want all %d: embedded page truncates", count, itemCount)
 	}
 }
+
+func TestApplyFetchFailureReleasesConnection(t *testing.T) {
+	// Regression: the fetch-failure counter used to run inside the apply
+	// transaction while acquiring a second pooled connection; with every
+	// connection already held by workers, that deadlocked the pool. A
+	// one-connection pool makes the old behavior hang and the fix pass.
+	_, connString := testpg.StartWithURL(t)
+	poolCfg, err := pgxpool.ParseConfig(connString)
+	if err != nil {
+		t.Fatal(err)
+	}
+	poolCfg.MaxConns = 1
+	pool, err := pgxpool.NewWithConfig(context.Background(), poolCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+
+	fs := fakestripe.New(t, "whsec_apply")
+	limiter := stripeapi.NewLimiter(1000)
+	t.Cleanup(limiter.Stop)
+	client := stripeapi.New(fs.URL(), "rk_test_apply", limiter, nil)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	engine := NewEngine(pool, client, nil, logger, nil)
+
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO driftless.object_state (object_type, object_id, last_synced_at, sync_source)
+		VALUES ('customer', 'cus_fail', now(), 'fetch')`); err != nil {
+		t.Fatal(err)
+	}
+
+	// a terminal API failure on the fetch
+	fs.FailRate(1.0, 401)
+
+	applyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	err = engine.Apply(applyCtx, queue.Job{ObjectType: "customer", ObjectID: "cus_fail"})
+	if err == nil {
+		t.Fatal("apply must surface the fetch failure")
+	}
+	if applyCtx.Err() != nil {
+		t.Fatal("apply timed out: the failure counter is deadlocking the pool again")
+	}
+
+	fs.FailRate(0, 0)
+	var failures int
+	if err := pool.QueryRow(ctx,
+		`SELECT fetch_failures FROM driftless.object_state WHERE object_id = 'cus_fail'`).Scan(&failures); err != nil {
+		t.Fatal(err)
+	}
+	if failures != 1 {
+		t.Errorf("fetch_failures = %d, want 1", failures)
+	}
+}
+
+func TestApplySoftDeleteCascadesToItems(t *testing.T) {
+	engine, fs, pool := newTestEngine(t)
+	ctx := context.Background()
+
+	item := map[string]any{
+		"id": "si_casc", "object": "subscription_item", "subscription": "sub_casc",
+		"quantity": 1, "price": map[string]any{"id": "price_1"},
+	}
+	event := fs.Put("subscription", "sub_casc", map[string]any{
+		"customer": "cus_1", "status": "active",
+		"items": map[string]any{"data": []any{item}, "has_more": false},
+	}, "customer.subscription.created")
+	insertEvent(t, pool, event)
+	if err := engine.Apply(ctx, jobFor("subscription", "sub_casc", &event)); err != nil {
+		t.Fatal(err)
+	}
+
+	// the subscription becomes unfetchable upstream: the 404 soft delete
+	// must not leave its items as live phantom entitlements
+	fs.Force404("sub_casc")
+	if err := engine.Apply(ctx, jobFor("subscription", "sub_casc", nil)); err != nil {
+		t.Fatal(err)
+	}
+
+	var subDeleted, itemDeleted bool
+	if err := pool.QueryRow(ctx,
+		`SELECT is_deleted FROM stripe.subscriptions WHERE id = 'sub_casc'`).Scan(&subDeleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT is_deleted FROM stripe.subscription_items WHERE id = 'si_casc'`).Scan(&itemDeleted); err != nil {
+		t.Fatal(err)
+	}
+	if !subDeleted || !itemDeleted {
+		t.Errorf("sub_deleted=%v item_deleted=%v, want both", subDeleted, itemDeleted)
+	}
+}

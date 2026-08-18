@@ -362,3 +362,51 @@ func TestCancelledRunResumesOnlyExplicitly(t *testing.T) {
 		t.Errorf("status = %q, want done", status)
 	}
 }
+
+func TestBackfillTerminalErrorFailsFast(t *testing.T) {
+	runner, fs, pool := newTestRunner(t, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	fs.Put("customer", "cus_1", nil, "customer.created")
+	// a revoked key answers 401 on every call: terminal, must not loop
+	fs.FailRate(1.0, 401)
+
+	start := time.Now()
+	_, err := runner.Start(ctx, Options{RequestedBy: "cli", Types: []string{"customer"}})
+	if err == nil {
+		t.Fatal("terminal API error must fail the run")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("terminal error took %v to surface: retry loop did not classify it", elapsed)
+	}
+	var failed int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM driftless.backfill_tasks WHERE status = 'failed'`).Scan(&failed); err != nil {
+		t.Fatal(err)
+	}
+	if failed == 0 {
+		t.Error("task must be recorded failed")
+	}
+}
+
+func TestBackfillRecordsWatermark(t *testing.T) {
+	runner, fs, pool := newTestRunner(t, nil)
+	ctx := context.Background()
+
+	fs.Put("customer", "cus_w", nil, "customer.created")
+	if _, err := runner.Start(ctx, Options{RequestedBy: "cli", Types: []string{"customer"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// without a watermark, payload mode would judge any stale delayed
+	// event newer than the backfilled snapshot
+	var watermark *time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT last_event_created FROM driftless.object_state WHERE object_id = 'cus_w'`).Scan(&watermark); err != nil {
+		t.Fatal(err)
+	}
+	if watermark == nil {
+		t.Fatal("backfilled object_state must carry the run horizon as watermark")
+	}
+}
