@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/quyumkehinde/driftless/internal/stripeapi"
 )
 
 func getJSON(t *testing.T, url string, out any) int {
@@ -138,5 +140,63 @@ func TestEventsEndpoint(t *testing.T) {
 	getJSON(t, url, &filtered)
 	if len(filtered.Data) != 2 {
 		t.Errorf("filtered events = %d, want 2", len(filtered.Data))
+	}
+}
+
+// TestPluralPathsCoverAllTypes keeps the double's routing in lockstep with
+// the canonical object type list. Checkout sessions route explicitly, so
+// the plural map carries the other twelve.
+func TestPluralPathsCoverAllTypes(t *testing.T) {
+	covered := map[string]bool{stripeapi.ObjectCheckoutSession: true}
+	for _, objectType := range pluralPaths {
+		covered[objectType] = true
+	}
+	if len(covered) != len(stripeapi.AllObjectTypes) {
+		t.Errorf("fakestripe routes %d object types, want %d", len(covered), len(stripeapi.AllObjectTypes))
+	}
+	for _, objectType := range stripeapi.AllObjectTypes {
+		if !covered[objectType] {
+			t.Errorf("fakestripe has no route for %q", objectType)
+		}
+	}
+}
+
+// TestListWalkAcrossMaxLimitPages walks more objects than one page at the
+// Stripe page-size ceiling can hold, the shape backfill relies on, and
+// requires strict newest-first order across page boundaries.
+func TestListWalkAcrossMaxLimitPages(t *testing.T) {
+	s := New(t, "whsec_test")
+	const total = 150
+	for i := range total {
+		s.Put("customer", fmt.Sprintf("cus_%03d", i), nil, "customer.created")
+	}
+
+	var all []string
+	cursor := ""
+	pages := 0
+	for {
+		url := fmt.Sprintf("%s/v1/customers?limit=%d", s.URL(), stripeapi.MaxPageLimit)
+		if cursor != "" {
+			url += "&starting_after=" + cursor
+		}
+		var p listResponse
+		getJSON(t, url, &p)
+		pages++
+		for _, obj := range p.Data {
+			all = append(all, obj["id"].(string))
+		}
+		if !p.HasMore {
+			break
+		}
+		cursor = p.Data[len(p.Data)-1]["id"].(string)
+	}
+
+	if len(all) != total || pages != 2 {
+		t.Fatalf("walked %d objects over %d pages, want %d over 2", len(all), pages, total)
+	}
+	for i, id := range all {
+		if want := fmt.Sprintf("cus_%03d", total-1-i); id != want {
+			t.Fatalf("position %d: got %s, want %s: walk must stay newest first across pages", i, id, want)
+		}
 	}
 }

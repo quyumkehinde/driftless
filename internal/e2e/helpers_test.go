@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/quyumkehinde/driftless/internal/fakestripe"
 )
 
 const e2eSecret = "whsec_e2e_suite"
@@ -167,6 +169,53 @@ func waitFor(t *testing.T, timeout time.Duration, what string, cond func() bool)
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", what)
+}
+
+// countRow runs a single-value count query and fails the test on error,
+// so a broken query can never satisfy a want-zero assertion by accident.
+func countRow(t *testing.T, pool *pgxpool.Pool, query string, args ...any) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(), query, args...).Scan(&n); err != nil {
+		t.Fatalf("count query %q: %v", query, err)
+	}
+	return n
+}
+
+// seedLargeAccount fills fakestripe with a realistic account shape:
+// customers with mixed-state subscriptions, items, invoices, and charges.
+func seedLargeAccount(t *testing.T, fs *fakestripe.Server, customers int) (objects int) {
+	t.Helper()
+	fs.Put("product", "prod_main", map[string]any{"name": "Pro", "active": true}, "product.created")
+	fs.Put("price", "price_main", map[string]any{
+		"product": "prod_main", "active": true, "currency": "usd", "unit_amount": 4900, "type": "recurring",
+	}, "price.created")
+	objects = 2
+
+	for i := range customers {
+		customerID := fmt.Sprintf("cus_%05d", i)
+		subID := fmt.Sprintf("sub_%05d", i)
+		status := []string{"active", "canceled", "trialing", "past_due"}[i%4]
+		item := map[string]any{
+			"id": fmt.Sprintf("si_%05d", i), "object": "subscription_item",
+			"subscription": subID, "quantity": 1, "price": map[string]any{"id": "price_main"},
+		}
+		fs.Put("customer", customerID, map[string]any{"email": fmt.Sprintf("c%05d@x.y", i)}, "customer.created")
+		fs.Put("subscription", subID, map[string]any{
+			"customer": customerID, "status": status,
+			"items": map[string]any{"data": []any{item}, "has_more": false},
+		}, "customer.subscription.created")
+		fs.Put("invoice", fmt.Sprintf("in_%05d", i), map[string]any{
+			"customer": customerID, "subscription": subID, "status": "paid",
+			"total": 4900, "amount_paid": 4900, "amount_due": 0, "currency": "usd",
+		}, "invoice.paid")
+		fs.Put("charge", fmt.Sprintf("ch_%05d", i), map[string]any{
+			"customer": customerID, "status": "succeeded", "amount": 4900,
+			"amount_refunded": 0, "currency": "usd", "paid": true, "refunded": false,
+		}, "charge.succeeded")
+		objects += 5 // customer, subscription, item, invoice, charge
+	}
+	return objects
 }
 
 // waitForDrain waits until no live jobs remain, meaning the workers have

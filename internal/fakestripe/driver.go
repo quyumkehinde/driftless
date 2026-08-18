@@ -73,7 +73,10 @@ func (s *Server) DeliverAll(t *testing.T, target string, outOfOrder bool) []stri
 	t.Helper()
 	events := s.Events()
 	if outOfOrder {
-		rand.Shuffle(len(events), func(i, j int) { events[i], events[j] = events[j], events[i] })
+		seed := rand.Uint64()
+		t.Logf("fakestripe: out-of-order delivery, shuffle seed %d", seed)
+		rng := rand.New(rand.NewPCG(seed, 0))
+		rng.Shuffle(len(events), func(i, j int) { events[i], events[j] = events[j], events[i] })
 	}
 	ids := make([]string, 0, len(events))
 	for _, e := range events {
@@ -152,8 +155,8 @@ func (s *Server) tryPost(target string, event Event, secret string) (int, error)
 	return resp.StatusCode, nil
 }
 
-// signHeader produces the Stripe-Signature header. The ingest package's
-// cross-check tests pin the same construction against stripe-go.
+// signHeader produces the Stripe-Signature header. A cross-check test
+// pins this construction against stripe-go's verifier.
 func signHeader(secret string, at time.Time, body []byte) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = fmt.Fprintf(mac, "%d.", at.Unix())

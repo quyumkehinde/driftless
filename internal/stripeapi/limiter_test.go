@@ -112,9 +112,21 @@ func TestLimiterAIMD(t *testing.T) {
 	l := NewLimiter(100)
 	defer l.Stop()
 
+	// the refill goroutine reads the clock concurrently, so advancing it
+	// must be synchronized
+	var clockMu sync.Mutex
 	clock := time.Now()
+	advance := func(d time.Duration) {
+		clockMu.Lock()
+		clock = clock.Add(d)
+		clockMu.Unlock()
+	}
 	l.mu.Lock()
-	l.now = func() time.Time { return clock }
+	l.now = func() time.Time {
+		clockMu.Lock()
+		defer clockMu.Unlock()
+		return clock
+	}
 	l.mu.Unlock()
 
 	l.On429(0)
@@ -127,12 +139,12 @@ func TestLimiterAIMD(t *testing.T) {
 	}
 
 	// recovery: 10% per minute, multiplicative
-	clock = clock.Add(time.Minute)
+	advance(time.Minute)
 	if got := l.EffectiveRPS(); got < 27.4 || got > 27.6 {
 		t.Errorf("after 1 minute: rate = %v, want about 27.5", got)
 	}
 	// long quiet period: fully recovered, capped at the configured ceiling
-	clock = clock.Add(30 * time.Minute)
+	advance(30 * time.Minute)
 	if got := l.EffectiveRPS(); got != 100 {
 		t.Errorf("after long recovery: rate = %v, want the 100 ceiling", got)
 	}

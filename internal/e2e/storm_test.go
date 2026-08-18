@@ -68,9 +68,7 @@ func Test429Storm(t *testing.T) {
 		start := time.Now()
 		fs.Deliver(t, ingestSrv.URL, event.ID)
 		waitFor(t, 30*time.Second, "webhook apply during storm", func() bool {
-			var n int
-			_ = pool.QueryRow(ctx, `SELECT count(*) FROM stripe.customers WHERE id = $1 AND NOT is_deleted`, id).Scan(&n)
-			return n == 1
+			return countRow(t, pool, `SELECT count(*) FROM stripe.customers WHERE id = $1 AND NOT is_deleted`, id) == 1
 		})
 		latencies = append(latencies, time.Since(start))
 	}
@@ -85,9 +83,8 @@ func Test429Storm(t *testing.T) {
 	}
 
 	// zero dead work anywhere
-	var deadJobs, failedTasks int
-	_ = pool.QueryRow(ctx, `SELECT count(*) FROM driftless.jobs WHERE status = 'dead'`).Scan(&deadJobs)
-	_ = pool.QueryRow(ctx, `SELECT count(*) FROM driftless.backfill_tasks WHERE status = 'failed'`).Scan(&failedTasks)
+	deadJobs := countRow(t, pool, `SELECT count(*) FROM driftless.jobs WHERE status = 'dead'`)
+	failedTasks := countRow(t, pool, `SELECT count(*) FROM driftless.backfill_tasks WHERE status = 'failed'`)
 	if deadJobs != 0 || failedTasks != 0 {
 		t.Errorf("dead jobs=%d failed tasks=%d, want 0 and 0", deadJobs, failedTasks)
 	}

@@ -41,9 +41,7 @@ func TestSubscriptionItemsPagination(t *testing.T) {
 	fs.Deliver(t, proc.IngestURL, event.ID)
 
 	waitFor(t, 15*time.Second, "subscription to mirror", func() bool {
-		var n int
-		_ = pool.QueryRow(ctx, `SELECT count(*) FROM stripe.subscriptions WHERE id = 'sub_15'`).Scan(&n)
-		return n == 1
+		return countRow(t, pool, `SELECT count(*) FROM stripe.subscriptions WHERE id = 'sub_15'`) == 1
 	})
 	waitForDrain(t, pool)
 

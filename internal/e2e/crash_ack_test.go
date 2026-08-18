@@ -67,9 +67,8 @@ func TestCrashBetweenInsertAndAck(t *testing.T) {
 				t.Fatalf("retry status = %d, want 200", statuses[0])
 			}
 
-			var eventCount, jobCount int
-			_ = pool.QueryRow(ctx, `SELECT count(*) FROM driftless.events`).Scan(&eventCount)
-			_ = pool.QueryRow(ctx, `SELECT count(*) FROM driftless.jobs`).Scan(&jobCount)
+			eventCount := countRow(t, pool, `SELECT count(*) FROM driftless.events`)
+			jobCount := countRow(t, pool, `SELECT count(*) FROM driftless.jobs`)
 			if eventCount != 1 || jobCount != 1 {
 				t.Errorf("after retry: events=%d jobs=%d, want exactly 1 and 1", eventCount, jobCount)
 			}

@@ -1,7 +1,6 @@
 package e2e
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -29,7 +28,6 @@ func TestKillDuringLoad(t *testing.T) {
 
 	binary := buildBinary(t)
 	pool, connString := testpg.StartWithURL(t)
-	ctx := context.Background()
 	fs := fakestripe.New(t, e2eSecret)
 
 	// current serve target, replaced on every restart
@@ -40,19 +38,6 @@ func TestKillDuringLoad(t *testing.T) {
 		defer mu.Unlock()
 		return proc.IngestURL
 	}
-
-	// killer: evenly spaced kill -9 plus restart
-	killerDone := make(chan struct{})
-	go func() {
-		defer close(killerDone)
-		for i := range kills {
-			time.Sleep(duration / time.Duration(kills+1) * time.Duration(i+1))
-			mu.Lock()
-			proc.Kill9(t)
-			proc = startServe(t, binary, connString, fs.URL(), "")
-			mu.Unlock()
-		}
-	}()
 
 	// generators: mutate fakestripe, then deliver with retries until acked,
 	// the way Stripe treats non-2xx responses
@@ -90,19 +75,32 @@ func TestKillDuringLoad(t *testing.T) {
 			}
 		}()
 	}
+
+	// killer, on the test goroutine so startServe and Kill9 may t.Fatal:
+	// evenly spaced kill -9 plus restart while the generators run
+	step := duration / time.Duration(kills+1)
+	for i := range kills {
+		time.Sleep(step)
+		if !time.Now().Before(deadline) {
+			t.Errorf("kill %d would land after the load window; %d kills overlapped load", i+1, i)
+			break
+		}
+		mu.Lock()
+		proc.Kill9(t)
+		proc = startServe(t, binary, connString, fs.URL(), "")
+		mu.Unlock()
+	}
 	wg.Wait()
-	<-killerDone
 
 	// invariants: every generated event was acknowledged, and exists
 	// exactly once with exactly one job
 	if generated.Load() != acked.Load() {
 		t.Errorf("generated %d events, acked %d", generated.Load(), acked.Load())
 	}
-	var eventCount, jobCount, extraJobs int
-	_ = pool.QueryRow(ctx, `SELECT count(*) FROM driftless.events`).Scan(&eventCount)
-	_ = pool.QueryRow(ctx, `SELECT count(*) FROM driftless.jobs`).Scan(&jobCount)
-	_ = pool.QueryRow(ctx,
-		`SELECT count(*) FROM (SELECT object_id FROM driftless.jobs GROUP BY object_id HAVING count(*) > 1) d`).Scan(&extraJobs)
+	eventCount := countRow(t, pool, `SELECT count(*) FROM driftless.events`)
+	jobCount := countRow(t, pool, `SELECT count(*) FROM driftless.jobs`)
+	extraJobs := countRow(t, pool,
+		`SELECT count(*) FROM (SELECT object_id FROM driftless.jobs GROUP BY object_id HAVING count(*) > 1) d`)
 	if int64(eventCount) != generated.Load() {
 		t.Errorf("event rows = %d, want %d: no loss, no double-recording", eventCount, generated.Load())
 	}

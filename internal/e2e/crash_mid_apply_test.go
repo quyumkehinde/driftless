@@ -1,7 +1,6 @@
 package e2e
 
 import (
-	"context"
 	"net/http"
 	"testing"
 	"time"
@@ -19,7 +18,6 @@ func TestCrashMidApplyWithRedelivery(t *testing.T) {
 	binary := buildBinary(t)
 	pool, connString := testpg.StartWithURL(t)
 	fs := fakestripe.New(t, e2eSecret)
-	ctx := context.Background()
 
 	event := fs.Put("subscription", "sub_crash", map[string]any{
 		"customer": "cus_1", "status": "active",
@@ -40,8 +38,7 @@ func TestCrashMidApplyWithRedelivery(t *testing.T) {
 	// the worker claims the job and dies inside the apply transaction
 	proc.WaitExit(t)
 
-	var mirrored int
-	_ = pool.QueryRow(ctx, `SELECT count(*) FROM stripe.subscriptions`).Scan(&mirrored)
+	mirrored := countRow(t, pool, `SELECT count(*) FROM stripe.subscriptions`)
 	if mirrored != 0 {
 		t.Fatalf("mirror rows after crash = %d, want 0: the apply transaction must roll back", mirrored)
 	}
@@ -55,17 +52,14 @@ func TestCrashMidApplyWithRedelivery(t *testing.T) {
 	}
 
 	waitFor(t, 30*time.Second, "subscription to mirror after recovery", func() bool {
-		var n int
-		_ = pool.QueryRow(ctx, `SELECT count(*) FROM stripe.subscriptions WHERE id = 'sub_crash' AND status = 'active'`).Scan(&n)
-		return n == 1
+		return countRow(t, pool, `SELECT count(*) FROM stripe.subscriptions WHERE id = 'sub_crash' AND status = 'active'`) == 1
 	})
 	waitForDrain(t, pool)
 
 	// exactly one of everything, no duplicate side effects
-	var events, subs, items int
-	_ = pool.QueryRow(ctx, `SELECT count(*) FROM driftless.events`).Scan(&events)
-	_ = pool.QueryRow(ctx, `SELECT count(*) FROM stripe.subscriptions`).Scan(&subs)
-	_ = pool.QueryRow(ctx, `SELECT count(*) FROM stripe.subscription_items WHERE NOT is_deleted`).Scan(&items)
+	events := countRow(t, pool, `SELECT count(*) FROM driftless.events`)
+	subs := countRow(t, pool, `SELECT count(*) FROM stripe.subscriptions`)
+	items := countRow(t, pool, `SELECT count(*) FROM stripe.subscription_items WHERE NOT is_deleted`)
 	if events != 1 || subs != 1 || items != 1 {
 		t.Errorf("events=%d subscriptions=%d items=%d, want exactly 1 of each", events, subs, items)
 	}

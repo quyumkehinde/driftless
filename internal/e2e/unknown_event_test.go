@@ -1,7 +1,6 @@
 package e2e
 
 import (
-	"context"
 	"io"
 	"net/http"
 	"strings"
@@ -19,7 +18,6 @@ func TestUnknownEventTypeStored(t *testing.T) {
 	binary := buildBinary(t)
 	pool, connString := testpg.StartWithURL(t)
 	fs := fakestripe.New(t, e2eSecret)
-	ctx := context.Background()
 
 	event := fs.Put("plan", "plan_1", map[string]any{"amount": 999}, "plan.created")
 	proc := startServe(t, binary, connString, fs.URL(), "")
@@ -30,9 +28,8 @@ func TestUnknownEventTypeStored(t *testing.T) {
 	}
 
 	// stored, no job
-	var eventCount, jobCount int
-	_ = pool.QueryRow(ctx, `SELECT count(*) FROM driftless.events WHERE event_id = $1`, event.ID).Scan(&eventCount)
-	_ = pool.QueryRow(ctx, `SELECT count(*) FROM driftless.jobs`).Scan(&jobCount)
+	eventCount := countRow(t, pool, `SELECT count(*) FROM driftless.events WHERE event_id = $1`, event.ID)
+	jobCount := countRow(t, pool, `SELECT count(*) FROM driftless.jobs`)
 	if eventCount != 1 || jobCount != 0 {
 		t.Errorf("events=%d jobs=%d, want 1 and 0", eventCount, jobCount)
 	}

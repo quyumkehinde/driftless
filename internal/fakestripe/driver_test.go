@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stripe/stripe-go/v84/webhook"
 
 	"github.com/quyumkehinde/driftless/internal/ingest"
 	"github.com/quyumkehinde/driftless/internal/queue"
@@ -140,5 +141,17 @@ func TestDeliverAllOutOfOrder(t *testing.T) {
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestSignHeaderMatchesStripeGo pins the driver's signer against stripe-go,
+// so the double and the real webhook scheme cannot drift apart. The ingest
+// package cross-checks its verifier the same way; together they break the
+// circularity of the double signing what only our own verifier checks.
+func TestSignHeaderMatchesStripeGo(t *testing.T) {
+	body := []byte(`{"id": "evt_sig", "object": "event", "type": "customer.created"}`)
+	header := signHeader(driverSecret, time.Now(), body)
+	if err := webhook.ValidatePayload(body, header, driverSecret); err != nil {
+		t.Errorf("stripe-go rejected a header from signHeader: %v", err)
 	}
 }

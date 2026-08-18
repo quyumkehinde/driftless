@@ -57,9 +57,8 @@ func TestConcurrentDuplicateDeliveries(t *testing.T) {
 		}
 	}
 
-	var eventCount, jobCount int
-	_ = pool.QueryRow(ctx, `SELECT count(*) FROM driftless.events`).Scan(&eventCount)
-	_ = pool.QueryRow(ctx, `SELECT count(*) FROM driftless.jobs`).Scan(&jobCount)
+	eventCount := countRow(t, pool, `SELECT count(*) FROM driftless.events`)
+	jobCount := countRow(t, pool, `SELECT count(*) FROM driftless.jobs`)
 	if eventCount != 1 {
 		t.Errorf("event rows = %d, want 1", eventCount)
 	}
