@@ -261,7 +261,8 @@ func (s *Sweeper) recordIfMissing(ctx context.Context, sweepID int64, raw json.R
 		gap = true
 
 		if err := db.New(tx).InsertGap(ctx, db.InsertGapParams{
-			EventID: event.ID, SweepID: sweepID,
+			EventID:      event.ID,
+			SweepID:      sweepID,
 			EventCreated: time.Unix(event.Created, 0).UTC(),
 		}); err != nil {
 			return err

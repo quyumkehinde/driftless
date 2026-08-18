@@ -24,6 +24,7 @@ import (
 	"github.com/quyumkehinde/driftless/internal/store/db"
 	"github.com/quyumkehinde/driftless/internal/store/migrations"
 	"github.com/quyumkehinde/driftless/internal/stripeapi"
+	"github.com/quyumkehinde/driftless/internal/sweep"
 )
 
 const shutdownTimeout = 10 * time.Second
@@ -125,6 +126,9 @@ func runServe(cmd *cobra.Command, cfg *config.Config, pool *pgxpool.Pool) error 
 		close(workersDone)
 	}()
 	go runReaper(ctx, q, queueMetrics, cfg.Workers.VisibilityTimeout.Std(), logger)
+	sweeper := sweep.New(pool, client, q, logger, sweep.NewMetrics(registry),
+		cfg.Sweep.Overlap.Std(), cfg.Sweep.FirstRunLookback.Std())
+	go runSweeper(ctx, pool, sweeper, cfg.Sweep.Interval.Std(), logger)
 	if cfg.Backfill.AutoResume {
 		runner := backfill.NewRunner(pool, client, logger, backfill.NewMetrics(registry), nil)
 		go resumeInterruptedBackfills(ctx, pool, runner, logger)
@@ -183,6 +187,67 @@ func resumeInterruptedBackfills(ctx context.Context, pool *pgxpool.Pool, runner 
 			}
 			continue
 		}
+	}
+}
+
+// sweeperLockKey serializes sweep passes across every serve replica, so
+// running more than one replica never double-sweeps.
+const sweeperLockKey = `hashtextextended('driftless:sweeper', 0)`
+
+// runSweeper runs one sweep pass immediately, then one per interval. Each
+// pass elects a leader with a try-advisory lock, so extra replicas skip
+// the pass instead of duplicating it, and take over when the leader dies.
+func runSweeper(ctx context.Context, pool *pgxpool.Pool, s *sweep.Sweeper, interval time.Duration, logger *slog.Logger) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		sweepOnce(ctx, pool, s, logger)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// sweepOnce runs a single sweep pass if this replica wins the lock.
+func sweepOnce(ctx context.Context, pool *pgxpool.Pool, s *sweep.Sweeper, logger *slog.Logger) {
+	if ctx.Err() != nil {
+		return
+	}
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			logger.Error("sweep lock connection failed", "error", err)
+		}
+		return
+	}
+	defer conn.Release()
+
+	var leader bool
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(`+sweeperLockKey+`)`).Scan(&leader); err != nil {
+		if ctx.Err() == nil {
+			logger.Error("sweep leader election failed", "error", err)
+		}
+		return
+	}
+	if !leader {
+		return // another replica is sweeping this pass
+	}
+	defer func() {
+		_, _ = conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock(`+sweeperLockKey+`)`)
+	}()
+
+	result, err := s.RunOnce(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			logger.Error("sweep failed", "error", err)
+		}
+		return
+	}
+	if result.GapsFound > 0 {
+		logger.Warn("sweep found undelivered events",
+			"events_seen", result.EventsSeen, "gaps_found", result.GapsFound)
 	}
 }
 
