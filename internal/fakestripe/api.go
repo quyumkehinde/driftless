@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/quyumkehinde/driftless/internal/stripeapi"
@@ -160,9 +161,30 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request, objectType s
 	})
 }
 
-// handleEvents serves the event log newest first with created filters.
+// matchesTypePatterns reports whether an event type matches any pattern;
+// patterns are exact types or prefix wildcards like invoice.*, the shape
+// the events API types filter accepts. No patterns means everything.
+func matchesTypePatterns(eventType string, patterns []string) bool {
+	if len(patterns) == 0 {
+		return true
+	}
+	for _, pattern := range patterns {
+		if prefix, ok := strings.CutSuffix(pattern, "*"); ok {
+			if strings.HasPrefix(eventType, prefix) {
+				return true
+			}
+		} else if eventType == pattern {
+			return true
+		}
+	}
+	return false
+}
+
+// handleEvents serves the event log newest first with created and type
+// filters.
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	gte, lte := createdBounds(r)
+	patterns := r.URL.Query()["types[]"]
 
 	s.mu.Lock()
 	events := make([]json.RawMessage, 0, len(s.events))
@@ -172,6 +194,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if !lte.IsZero() && e.Created.After(lte) {
+			continue
+		}
+		if !matchesTypePatterns(e.Type, patterns) {
 			continue
 		}
 		events = append(events, json.RawMessage(e.Payload))

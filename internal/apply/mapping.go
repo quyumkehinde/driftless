@@ -5,6 +5,7 @@ package apply
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/quyumkehinde/driftless/internal/stripeapi"
@@ -70,6 +71,22 @@ var prefixFamilies = []struct {
 	{"charge.dispute.", stripeapi.ObjectDispute},
 	{"payment_intent.", stripeapi.ObjectPaymentIntent},
 	{"setup_intent.", stripeapi.ObjectSetupIntent},
+}
+
+// SubscribedEventTypes returns the event type patterns the contract
+// covers, exact types plus wildcard families, in the shape the events API
+// types filter accepts. The webhook endpoint instructions and the gap
+// sweeper's filter both come from here so they can never diverge.
+func SubscribedEventTypes() []string {
+	patterns := make([]string, 0, len(exactTypes)+len(prefixFamilies))
+	for eventType := range exactTypes {
+		patterns = append(patterns, eventType)
+	}
+	for _, family := range prefixFamilies {
+		patterns = append(patterns, family.prefix+"*")
+	}
+	slices.Sort(patterns)
+	return patterns
 }
 
 // ResolveType maps an event type to the object type it pokes. ok is false
