@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/quyumkehinde/driftless/internal/obs"
 )
@@ -59,6 +60,11 @@ func (c *Config) Validate(scope Scope) (warnings []string, err error) {
 	}
 	if c.Workers.Count < 1 || c.Workers.Count > 64 {
 		errs = append(errs, fmt.Errorf("workers.count must be between 1 and 64, got %d", c.Workers.Count))
+	}
+	if c.Verify.Auto {
+		if _, err := time.Parse("15:04", c.Verify.AutoTime); err != nil {
+			errs = append(errs, fmt.Errorf("verify.auto_time must be HH:MM, got %q", c.Verify.AutoTime))
+		}
 	}
 	if _, err := obs.ParseLevel(c.Log.Level); err != nil {
 		errs = append(errs, err)

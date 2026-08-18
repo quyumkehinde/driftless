@@ -25,6 +25,7 @@ import (
 	"github.com/quyumkehinde/driftless/internal/store/migrations"
 	"github.com/quyumkehinde/driftless/internal/stripeapi"
 	"github.com/quyumkehinde/driftless/internal/sweep"
+	"github.com/quyumkehinde/driftless/internal/verify"
 )
 
 const shutdownTimeout = 10 * time.Second
@@ -132,6 +133,10 @@ func runServe(cmd *cobra.Command, cfg *config.Config, pool *pgxpool.Pool) error 
 	if cfg.Backfill.AutoResume {
 		runner := backfill.NewRunner(pool, client, logger, backfill.NewMetrics(registry), nil)
 		go resumeInterruptedBackfills(ctx, pool, runner, logger)
+	}
+	if cfg.Verify.Auto {
+		verifier := verify.NewRunner(pool, client, logger, nil)
+		go runAutoVerify(ctx, pool, verifier, cfg.Verify.AutoTime, logger)
 	}
 
 	errCh := make(chan error, 2)
@@ -248,6 +253,72 @@ func sweepOnce(ctx context.Context, pool *pgxpool.Pool, s *sweep.Sweeper, logger
 	if result.GapsFound > 0 {
 		logger.Warn("sweep found undelivered events",
 			"events_seen", result.EventsSeen, "gaps_found", result.GapsFound)
+	}
+}
+
+// autoVerifyLockKey serializes scheduled verifications across replicas.
+const autoVerifyLockKey = `hashtextextended('driftless:verify-auto', 0)`
+
+// nextAutoVerify returns the next occurrence of the HH:MM wall-clock time
+// strictly after now, in now's location.
+func nextAutoVerify(now time.Time, autoTime string) time.Time {
+	at, err := time.Parse("15:04", autoTime)
+	if err != nil {
+		// config validation rejects unparseable times before serve starts
+		panic("unvalidated verify.auto_time: " + autoTime)
+	}
+	next := time.Date(now.Year(), now.Month(), now.Day(), at.Hour(), at.Minute(), 0, 0, now.Location())
+	if !next.After(now) {
+		next = next.AddDate(0, 0, 1)
+	}
+	return next
+}
+
+// runAutoVerify runs a quick verification at the configured wall-clock
+// time each day, on whichever replica wins the lock. Drift never stops
+// serve; it is recorded, logged, and left for operators and verify runs.
+func runAutoVerify(ctx context.Context, pool *pgxpool.Pool, r *verify.Runner, autoTime string, logger *slog.Logger) {
+	for {
+		wait := time.Until(nextAutoVerify(time.Now(), autoTime))
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+
+		conn, err := pool.Acquire(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				logger.Error("auto verify lock connection failed", "error", err)
+			}
+			continue
+		}
+		var leader bool
+		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(`+autoVerifyLockKey+`)`).Scan(&leader); err != nil {
+			conn.Release()
+			if ctx.Err() == nil {
+				logger.Error("auto verify leader election failed", "error", err)
+			}
+			continue
+		}
+		if !leader {
+			conn.Release()
+			continue
+		}
+		report, err := r.Run(ctx, verify.Options{})
+		_, _ = conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock(`+autoVerifyLockKey+`)`)
+		conn.Release()
+		switch {
+		case err != nil:
+			if ctx.Err() == nil {
+				logger.Error("auto verify failed", "error", err)
+			}
+		case report.Drifted > 0:
+			logger.Warn("nightly verify found drift",
+				"checked", report.Checked, "drifted", report.Drifted)
+		default:
+			logger.Info("nightly verify clean", "checked", report.Checked)
+		}
 	}
 }
 

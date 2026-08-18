@@ -118,6 +118,7 @@ func Defaults() Config {
 			AutoResume: true,
 		},
 		Verify: VerifyConfig{
+			Auto:     true,
 			AutoTime: "03:00",
 		},
 		Retention: RetentionConfig{

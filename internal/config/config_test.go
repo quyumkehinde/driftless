@@ -42,7 +42,7 @@ func TestDefaults(t *testing.T) {
 		},
 		Apply:     ApplyConfig{PayloadModeTypes: []string{}},
 		Backfill:  BackfillConfig{AutoResume: true},
-		Verify:    VerifyConfig{AutoTime: "03:00"},
+		Verify:    VerifyConfig{Auto: true, AutoTime: "03:00"},
 		Retention: RetentionConfig{EventsDays: 90},
 		Log:       LogConfig{Level: "info", Format: "json"},
 	}
