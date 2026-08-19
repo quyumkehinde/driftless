@@ -116,8 +116,21 @@ Import reconstructs objects from sync-engine's typed columns and marks them impo
 
 ## Operating it
 
-- `driftless status`: one-screen health: events, queue, sweeps, backfill, drift.
-- `driftless doctor`: environment checks with copy-paste fixes.
+Full command reference, generated from the binary's own help text, lives in [`docs/cli/`](docs/cli/driftless.md).
+
+| Command | Does |
+|---|---|
+| `serve` | run everything: ingest, workers, sweeper, retention, nightly verify |
+| `init` | first-run setup: checks, migrations, offer of a backfill |
+| `backfill` | import history, resumable, `--since` / `--type` / `--dry-run` |
+| `verify` | reconcile against Stripe; exit 3 on drift; `--repair` fixes |
+| `status` | one-screen health summary |
+| `doctor` | environment checks with copy-paste fixes |
+| `jobs list` / `jobs retry` | inspect and requeue dead work |
+| `events show` | dump one stored event, payload included |
+| `import` | migrate from stripe/sync-engine |
+| `migrate up` / `migrate status` | schema migrations, embedded, forward-only |
+| `config print` | effective configuration, secrets redacted |
 - Prometheus metrics on `:8725/metrics`; recommended alert rules with runbook annotations ship in [`contrib/alerts.yaml`](contrib/alerts.yaml).
 - Deploy recipes for Docker Compose, systemd, and Kubernetes live in [`deploy/`](deploy/). Replicas beyond one are safe: work is claimed with `SKIP LOCKED` and scheduled jobs elect a leader per pass.
 

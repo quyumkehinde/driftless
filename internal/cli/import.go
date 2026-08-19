@@ -17,7 +17,16 @@ func newImportCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "import",
 		Short: "Migrate rows from a stripe/sync-engine database into the mirror",
-		Args:  cobra.NoArgs,
+		Long: "Import copies a stripe/sync-engine schema into the mirror, one table per\n" +
+			"transaction, reconstructing each object from its typed columns. Existing\n" +
+			"mirror rows are never overwritten. Imported objects are marked\n" +
+			"import-sourced; run verify --repair afterward to re-fetch true state for\n" +
+			"every one of them.\n" +
+			"\n" +
+			"The sync-engine schema must be renamed away from stripe first, since the\n" +
+			"mirror itself lives there:\n" +
+			"  ALTER SCHEMA stripe RENAME TO sync_engine",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if !fromSyncEngine {
 				return &usageError{err: fmt.Errorf("pass --from-sync-engine; it is the only supported source")}

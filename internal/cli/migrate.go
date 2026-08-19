@@ -22,7 +22,9 @@ func newMigrateUpCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "up",
 		Short: "Apply pending migrations",
-		Args:  cobra.NoArgs,
+		Long: "Migrations are embedded in the binary and applied forward-only. Up is\n" +
+			"safe to run before swapping binaries during an upgrade.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			db, err := openDB(cmd, flags)
 			if err != nil {

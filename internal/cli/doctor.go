@@ -48,7 +48,13 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "doctor",
 		Short: "Check the environment: database, migrations, Stripe key, webhook setup",
-		Args:  cobra.NoArgs,
+		Long: "Doctor probes everything serve depends on and prints one line per check:\n" +
+			"database connectivity, schema currency, whether the API key works and\n" +
+			"which account it belongs to, agreement with the recorded account, webhook\n" +
+			"secret presence, key scope, and whether webhooks are actually arriving.\n" +
+			"\n" +
+			"Warnings exit 0; any hard failure exits 1.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, pool, err := openPool(cmd, flags, config.ScopeDefault)
 			if err != nil {

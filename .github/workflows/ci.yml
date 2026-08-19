@@ -40,6 +40,8 @@ jobs:
           go-version: "1.26.x"
       - run: go build ./...
       - run: GOOS=darwin GOARCH=arm64 go build ./...
+      - name: cli reference is current
+        run: go run ./cmd/gendocs && git diff --exit-code docs/cli
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"

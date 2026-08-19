@@ -8,7 +8,7 @@ coverage.out
 .DS_Store
 
 # Local-only spec and planning docs (not published)
-/docs/
+/spec/
 /PLAN.md
 /marketing/
 

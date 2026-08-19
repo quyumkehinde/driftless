@@ -19,7 +19,11 @@ func newStatusCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
 		Short: "Show sync health at a glance: events, queue, sweeps, backfill, drift",
-		Args:  cobra.NoArgs,
+		Long: "Status prints a one-screen summary of the mirror: event totals and\n" +
+			"freshness, queue depth by state, apply lag, the last sweep and any gaps it\n" +
+			"found, the latest backfill run, the latest verification, and stored event\n" +
+			"types that map to no known object.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, pool, err := openPool(cmd, flags, config.ScopeDefault)
 			if err != nil {

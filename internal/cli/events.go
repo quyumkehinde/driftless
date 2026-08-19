@@ -27,7 +27,10 @@ func newEventsShowCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "show <event-id>",
 		Short: "Dump one stored event: metadata and raw payload",
-		Args:  cobra.ExactArgs(1),
+		Long: "Prints the stored event's metadata (type, timestamps, source, processing\n" +
+			"state) followed by its raw payload, pretty-printed. This is the intended\n" +
+			"way to inspect payloads; log output never contains them.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, pool, err := openPool(cmd, flags, config.ScopeDefault)
 			if err != nil {

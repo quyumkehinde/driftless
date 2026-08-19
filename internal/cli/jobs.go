@@ -65,7 +65,10 @@ func newJobsRetryCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "retry [job-id]",
 		Short: "Requeue dead jobs with a fresh attempt budget",
-		Args:  cobra.MaximumNArgs(1),
+		Long: "A job goes dead after exhausting its retry budget; its last error is\n" +
+			"kept on the row. Retry resets the budget for one job by id, or for every\n" +
+			"dead job with --all-dead.",
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if allDead == (len(args) == 1) {
 				return &usageError{err: fmt.Errorf("pass exactly one of --all-dead or a job id")}

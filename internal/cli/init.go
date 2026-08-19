@@ -19,7 +19,10 @@ func newInitCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "init",
 		Short: "First-run setup: check the environment, migrate, offer a backfill",
-		Args:  cobra.NoArgs,
+		Long: "Init is the interactive first run: it checks the database and the Stripe\n" +
+			"key, applies pending migrations, and offers to start a full backfill.\n" +
+			"Safe to re-run at any time.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, pool, err := openPool(cmd, flags, config.ScopeDefault)
 			if err != nil {

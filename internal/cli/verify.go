@@ -24,7 +24,16 @@ func newVerifyCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "verify",
 		Short: "Reconcile the mirror against Stripe and report drift",
-		Args:  cobra.NoArgs,
+		Long: "Verify re-reads objects from Stripe and compares them against the mirror,\n" +
+			"reporting every divergence: objects Stripe has that the mirror lacks,\n" +
+			"objects whose stored data differs, and live mirror rows Stripe no longer\n" +
+			"has. Full mode walks everything; quick mode walks the last day and\n" +
+			"spot-checks a random sample of older history.\n" +
+			"\n" +
+			"Exit codes are the CI contract: 0 means no drift, 3 means drift was found\n" +
+			"(even if --repair fixed it), 4 means migrations are pending. Every run is\n" +
+			"recorded in the verifications history table.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			opts, err := verifyOptions(quick, full, types, since, repair)
 			if err != nil {

@@ -30,7 +30,13 @@ func newBackfillCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "backfill",
 		Short: "Import history from the Stripe API into the mirror",
-		Args:  cobra.NoArgs,
+		Long: "Backfill walks the Stripe list APIs and imports history into the mirror,\n" +
+			"newest first, resumable across restarts and crashes. Progress is tracked\n" +
+			"per object type; an interrupted run picks up at the last committed page.\n" +
+			"\n" +
+			"Without flags it imports full history. Combine with --since for a bounded\n" +
+			"import, --type for a subset, or --dry-run to see the plan.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			opts, err := backfillOptions(full, since, types, resume, dryRun)
 			if err != nil {

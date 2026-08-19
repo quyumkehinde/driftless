@@ -39,7 +39,15 @@ func newServeCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Run the webhook receiver and metrics listeners",
-		Args:  cobra.NoArgs,
+		Long: "Serve is the long-running service: it receives and verifies Stripe webhooks,\n" +
+			"applies events to the mirror with a worker pool, sweeps for events Stripe\n" +
+			"never delivered, purges expired raw events, and runs the nightly quick\n" +
+			"verification. Listeners: webhook ingest on server.listen, metrics and\n" +
+			"readiness on server.metrics_listen.\n" +
+			"\n" +
+			"Running more than one replica is safe. Workers claim jobs with SKIP LOCKED\n" +
+			"and the scheduled passes elect a leader through Postgres advisory locks.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, pool, err := openPool(cmd, flags, config.ScopeServe)
 			if err != nil {
