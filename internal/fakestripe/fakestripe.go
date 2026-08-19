@@ -143,7 +143,10 @@ func (s *Server) Delete(objectType, id string, eventType string) Event {
 	}
 	tombstone["deleted"] = true
 
-	delete(s.objects[objectType], id)
+	// Stripe keeps serving deleted objects as 200 stubs on GET while
+	// omitting them from listings; the double stores the stub so both
+	// behaviors fall out naturally.
+	s.objects[objectType][id] = map[string]any{"id": id, "object": objectType, "deleted": true}
 	for i, oid := range s.order[objectType] {
 		if oid == id {
 			s.order[objectType] = append(s.order[objectType][:i], s.order[objectType][i+1:]...)
@@ -153,12 +156,13 @@ func (s *Server) Delete(objectType, id string, eventType string) Event {
 	return s.appendEvent(eventType, tombstone)
 }
 
-// Object returns a copy of a stored object, or ok=false after deletion.
+// Object returns a copy of a stored live object; deletion stubs report
+// ok=false, matching what listings and mirror-parity checks expect.
 func (s *Server) Object(objectType, id string) (map[string]any, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	obj, ok := s.objects[objectType][id]
-	if !ok {
+	if !ok || obj["deleted"] == true {
 		return nil, false
 	}
 	copied := make(map[string]any, len(obj))

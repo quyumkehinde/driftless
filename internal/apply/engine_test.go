@@ -515,3 +515,35 @@ func TestApplySoftDeleteCascadesToItems(t *testing.T) {
 		t.Errorf("sub_deleted=%v item_deleted=%v, want both", subDeleted, itemDeleted)
 	}
 }
+
+func TestApplyFetchedDeletionStubSoftDeletes(t *testing.T) {
+	engine, fs, pool := newTestEngine(t)
+	ctx := context.Background()
+
+	event := fs.Put("customer", "cus_stub", map[string]any{"email": "keep@x.y"}, "customer.created")
+	insertEvent(t, pool, event)
+	if err := engine.Apply(ctx, jobFor("customer", "cus_stub", &event)); err != nil {
+		t.Fatal(err)
+	}
+
+	// deleted upstream, but the job in hand carries no deleted marker:
+	// the fetch returns Stripe's 200 stub, which must soft-delete, never
+	// overwrite the row with the three-field stub
+	fs.Delete("customer", "cus_stub", "customer.deleted")
+	if err := engine.Apply(ctx, jobFor("customer", "cus_stub", nil)); err != nil {
+		t.Fatal(err)
+	}
+
+	var isDeleted bool
+	var email string
+	if err := pool.QueryRow(ctx,
+		`SELECT is_deleted, data->>'email' FROM stripe.customers WHERE id = 'cus_stub'`).Scan(&isDeleted, &email); err != nil {
+		t.Fatal(err)
+	}
+	if !isDeleted {
+		t.Error("a fetched deletion stub must soft-delete the row")
+	}
+	if email != "keep@x.y" {
+		t.Errorf("email = %q: the stub must not clobber the row's history", email)
+	}
+}

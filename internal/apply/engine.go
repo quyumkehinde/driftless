@@ -145,6 +145,11 @@ func (e *Engine) applyLocked(ctx context.Context, tx pgx.Tx, job queue.Job) erro
 	if err != nil {
 		return &fetchError{err: err}
 	}
+	if stripeapi.IsDeletionStub(raw) {
+		// Deletable objects fetch as 200 stubs, not 404s; upserting the
+		// stub would clobber the row's history with three fields.
+		return e.finishSoftDelete(ctx, tx, job)
+	}
 
 	if job.ObjectType == stripeapi.ObjectSubscription {
 		if err := e.upsertSubscription(ctx, tx, job.ObjectID, raw); err != nil {

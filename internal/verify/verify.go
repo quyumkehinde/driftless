@@ -451,7 +451,7 @@ func (r *Runner) spotCheck(ctx context.Context, objectType string, sample int, w
 		upstream, err := r.client.GetObject(ctx, stripeapi.PriorityVerify, objectType, id)
 		var notFound *stripeapi.NotFoundError
 		switch {
-		case errors.As(err, &notFound):
+		case errors.As(err, &notFound), err == nil && stripeapi.IsDeletionStub(upstream):
 			if err := record(id, KindOrphaned); err != nil {
 				return checked, err
 			}
@@ -484,7 +484,9 @@ func (r *Runner) repair(ctx context.Context, objectType, id string) error {
 		raw, err := r.client.GetObject(ctx, stripeapi.PriorityVerify, objectType, id)
 		var notFound *stripeapi.NotFoundError
 		switch {
-		case errors.As(err, &notFound):
+		case errors.As(err, &notFound), err == nil && stripeapi.IsDeletionStub(raw):
+			// gone upstream, whether as a 404 or as Stripe's 200 deletion
+			// stub; the mirror keeps its history under a soft delete
 			if err := mirror.SoftDeleteObject(ctx, tx, objectType, id); err != nil {
 				return err
 			}

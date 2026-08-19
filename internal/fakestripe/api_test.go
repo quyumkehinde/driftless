@@ -200,3 +200,31 @@ func TestListWalkAcrossMaxLimitPages(t *testing.T) {
 		}
 	}
 }
+
+func TestDeletedObjectsServeStubsAndVanishFromLists(t *testing.T) {
+	s := New(t, "whsec_test")
+	s.Put("customer", "cus_del", map[string]any{"email": "a@b.c"}, "customer.created")
+	s.Put("customer", "cus_live", nil, "customer.created")
+	s.Delete("customer", "cus_del", "customer.deleted")
+
+	// GET serves a 200 deletion stub, the way Stripe does
+	var obj map[string]any
+	if status := getJSON(t, s.URL()+"/v1/customers/cus_del", &obj); status != http.StatusOK {
+		t.Fatalf("deleted object GET status = %d, want 200 with a stub", status)
+	}
+	if obj["deleted"] != true || obj["email"] != nil {
+		t.Errorf("stub = %v, want only id, object, deleted", obj)
+	}
+
+	// listings omit it
+	var page listResponse
+	getJSON(t, s.URL()+"/v1/customers", &page)
+	if len(page.Data) != 1 || page.Data[0]["id"] != "cus_live" {
+		t.Errorf("list = %v, want only the live customer", page.Data)
+	}
+
+	// never-existed ids still 404
+	if status := getJSON(t, s.URL()+"/v1/customers/cus_never", &obj); status != http.StatusNotFound {
+		t.Errorf("unknown id status = %d, want 404", status)
+	}
+}

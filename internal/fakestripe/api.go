@@ -76,7 +76,9 @@ func (s *Server) handleAccount(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleGet(w http.ResponseWriter, objectType, id string) {
-	obj, ok := s.Object(objectType, id)
+	s.mu.Lock()
+	obj, ok := s.objects[objectType][id]
+	s.mu.Unlock()
 	if !ok || s.isForced404(id) {
 		writeError(w, http.StatusNotFound, "resource_missing")
 		return

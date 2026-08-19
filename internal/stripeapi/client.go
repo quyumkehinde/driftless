@@ -94,6 +94,19 @@ func CollectionPath(objectType string) (string, bool) {
 	return path, ok
 }
 
+// IsDeletionStub reports whether a fetched object is Stripe's deletion
+// marker: deletable objects are served as 200 responses carrying
+// deleted: true, not as 404s.
+func IsDeletionStub(raw []byte) bool {
+	var stub struct {
+		Deleted bool `json:"deleted"`
+	}
+	if err := json.Unmarshal(raw, &stub); err != nil {
+		return false
+	}
+	return stub.Deleted
+}
+
 // LastID extracts the final item's id from a page, for cursor advancement.
 func LastID(page *ListPage) (string, error) {
 	if len(page.Data) == 0 {
