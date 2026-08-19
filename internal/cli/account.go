@@ -24,23 +24,23 @@ func ensureAccount(ctx context.Context, pool *pgxpool.Pool, client *stripeapi.Cl
 		return fmt.Errorf("stripe account check: %w", err)
 	}
 	var account struct {
-		ID       string `json:"id"`
-		Livemode bool   `json:"livemode"`
+		ID string `json:"id"`
 	}
 	if err := json.Unmarshal(raw, &account); err != nil {
 		return fmt.Errorf("stripe account response: %w", err)
 	}
+	livemode := stripeapi.IsLiveKey(client.Key())
 
 	q := db.New(pool)
 
 	if force {
 		if err := q.ForceMeta(ctx, db.ForceMetaParams{
 			StripeAccountID: &account.ID,
-			Livemode:        &account.Livemode,
+			Livemode:        &livemode,
 		}); err != nil {
 			return err
 		}
-		logger.Warn("account guard overridden", "account", account.ID, "livemode", account.Livemode)
+		logger.Warn("account guard overridden", "account", account.ID, "livemode", livemode)
 		return nil
 	}
 
@@ -48,13 +48,13 @@ func ensureAccount(ctx context.Context, pool *pgxpool.Pool, client *stripeapi.Cl
 	if errors.Is(err, pgx.ErrNoRows) {
 		rows, err := q.InitMeta(ctx, db.InitMetaParams{
 			StripeAccountID: &account.ID,
-			Livemode:        &account.Livemode,
+			Livemode:        &livemode,
 		})
 		if err != nil {
 			return err
 		}
 		if rows == 1 {
-			logger.Info("account recorded", "account", account.ID, "livemode", account.Livemode)
+			logger.Info("account recorded", "account", account.ID, "livemode", livemode)
 			return nil
 		}
 		// lost the first-write race to a concurrent process: compare
@@ -71,10 +71,10 @@ func ensureAccount(ctx context.Context, pool *pgxpool.Pool, client *stripeapi.Cl
 		recorded = *meta.StripeAccountID
 	}
 	recordedLive := meta.Livemode != nil && *meta.Livemode
-	if recorded != account.ID || recordedLive != account.Livemode {
+	if recorded != account.ID || recordedLive != livemode {
 		return fmt.Errorf(
 			"account guard: this database mirrors %s (livemode=%v) but the key is for %s (livemode=%v); pass --force-account only if this is intentional",
-			recorded, recordedLive, account.ID, account.Livemode)
+			recorded, recordedLive, account.ID, livemode)
 	}
 	return nil
 }

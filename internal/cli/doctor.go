@@ -35,6 +35,7 @@ const (
 	checkOK   checkStatus = "ok"
 	checkWarn checkStatus = "warn"
 	checkFail checkStatus = "fail"
+	checkSkip checkStatus = "skip"
 )
 
 // checkResult is one doctor line: outcome plus detail.
@@ -91,18 +92,26 @@ func runChecks(ctx context.Context, cfg *config.Config, q *db.Queries) []checkRe
 	}
 
 	check(databaseCheck(ctx, cfg))
-	check(migrationsCheck(ctx, cfg))
+	migName, migStatus, migDetail := migrationsCheck(ctx, cfg)
+	check(migName, migStatus, migDetail)
+	migrated := migStatus == checkOK
 
-	accountID, livemode, apiErr := fetchAccount(ctx, cfg)
-	if apiErr != nil {
+	livemode := stripeapi.IsLiveKey(cfg.Stripe.APIKey)
+	accountID, apiErr := fetchAccount(ctx, cfg)
+	switch {
+	case apiErr != nil:
 		check("stripe api", checkFail, apiErr.Error())
-	} else {
+	default:
 		mode := "test"
 		if livemode {
 			mode = "live"
 		}
 		check("stripe api", checkOK, fmt.Sprintf("key works, account %s (%s mode)", accountID, mode))
-		check(accountGuardCheck(ctx, q, accountID, livemode))
+		if migrated {
+			check(accountGuardCheck(ctx, q, accountID, livemode))
+		} else {
+			check("account guard", checkSkip, "migrations pending")
+		}
 	}
 
 	if cfg.Stripe.WebhookSecret == "" {
@@ -118,7 +127,11 @@ func runChecks(ctx context.Context, cfg *config.Config, q *db.Queries) []checkRe
 		check("key scope", checkOK, "restricted key")
 	}
 
-	check(webhookTrafficCheck(ctx, q))
+	if migrated {
+		check(webhookTrafficCheck(ctx, q))
+	} else {
+		check("webhook traffic", checkSkip, "migrations pending")
+	}
 	return results
 }
 
@@ -151,22 +164,21 @@ func migrationsCheck(ctx context.Context, cfg *config.Config) (string, checkStat
 	return "migrations", checkOK, "schema current"
 }
 
-func fetchAccount(ctx context.Context, cfg *config.Config) (accountID string, livemode bool, err error) {
+func fetchAccount(ctx context.Context, cfg *config.Config) (accountID string, err error) {
 	limiter := stripeapi.NewLimiter(cfg.Stripe.APIRPS)
 	defer limiter.Stop()
 	client := newStripeClient(cfg, limiter)
 	raw, err := client.GetAccount(ctx, stripeapi.PriorityWebhook)
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
 	var account struct {
-		ID       string `json:"id"`
-		Livemode bool   `json:"livemode"`
+		ID string `json:"id"`
 	}
 	if err := json.Unmarshal(raw, &account); err != nil {
-		return "", false, fmt.Errorf("account response: %w", err)
+		return "", fmt.Errorf("account response: %w", err)
 	}
-	return account.ID, account.Livemode, nil
+	return account.ID, nil
 }
 
 func accountGuardCheck(ctx context.Context, q *db.Queries, accountID string, livemode bool) (string, checkStatus, string) {

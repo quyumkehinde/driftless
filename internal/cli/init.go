@@ -40,13 +40,12 @@ func newInitCmd(flags *rootFlags) *cobra.Command {
 				return fmt.Errorf("stripe api key check failed: %w", err)
 			}
 			var acct struct {
-				ID       string `json:"id"`
-				Livemode bool   `json:"livemode"`
+				ID string `json:"id"`
 			}
 			if err := json.Unmarshal(account, &acct); err != nil {
 				return fmt.Errorf("stripe account response: %w", err)
 			}
-			cmd.Printf("  stripe: key works, account %s (livemode=%v)\n", acct.ID, acct.Livemode)
+			cmd.Printf("  stripe: key works, account %s (livemode=%v)\n", acct.ID, stripeapi.IsLiveKey(cfg.Stripe.APIKey))
 			if cfg.Stripe.WebhookSecret == "" {
 				cmd.Println("  warning: stripe.webhook_secret is not set; serve will refuse to start without it")
 			}

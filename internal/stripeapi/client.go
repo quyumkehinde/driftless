@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -23,7 +24,7 @@ import (
 // regardless of what the customer's webhook endpoint is configured with,
 // because fetch mode re-fetches with the pin. Provisional until the
 // pre-release live-sandbox smoke validates it against real Stripe.
-const StripeVersion = "2026-01-01"
+const StripeVersion = "2026-07-29.dahlia"
 
 // DefaultBaseURL is the real API; tests point at fakestripe instead.
 const DefaultBaseURL = "https://api.stripe.com"
@@ -45,12 +46,16 @@ func (e *NotFoundError) Error() string { return fmt.Sprintf("stripe: %s not foun
 
 // APIError is any other non-2xx outcome that survived retries.
 type APIError struct {
-	Status int
-	Code   string
-	Path   string
+	Status  int
+	Code    string
+	Message string
+	Path    string
 }
 
 func (e *APIError) Error() string {
+	if e.Message != "" {
+		return fmt.Sprintf("stripe: %s returned %d (%s): %s", e.Path, e.Status, e.Code, e.Message)
+	}
 	return fmt.Sprintf("stripe: %s returned %d (%s)", e.Path, e.Status, e.Code)
 }
 
@@ -92,6 +97,12 @@ func NewMetrics(reg *prometheus.Registry, limiter *Limiter) *Metrics {
 func CollectionPath(objectType string) (string, bool) {
 	path, ok := objectPaths[objectType]
 	return path, ok
+}
+
+// IsLiveKey reports whether an API key operates on live data. The key
+// prefix is the only reliable source: account payloads carry no livemode.
+func IsLiveKey(key string) bool {
+	return strings.Contains(key, "_live_")
 }
 
 // IsDeletionStub reports whether a fetched object is Stripe's deletion
@@ -168,6 +179,10 @@ func New(baseURL, apiKey string, limiter *Limiter, metrics *Metrics) *Client {
 	}
 }
 
+// Key returns the configured API key, for key-derived checks like
+// livemode detection.
+func (c *Client) Key() string { return c.apiKey }
+
 // GetObject fetches one object by type and id, returning the raw JSON.
 func (c *Client) GetObject(ctx context.Context, p Priority, objectType, id string) (json.RawMessage, error) {
 	base, ok := objectPaths[objectType]
@@ -226,9 +241,11 @@ func (c *Client) get(ctx context.Context, p Priority, path string, query url.Val
 			c.limiter.On429(retryAfter)
 			lastErr = &APIError{Status: status, Code: "rate_limited", Path: path}
 		case status >= 500:
-			lastErr = &APIError{Status: status, Code: apiErrorCode(body), Path: path}
+			code, message := apiErrorDetail(body)
+			lastErr = &APIError{Status: status, Code: code, Message: message, Path: path}
 		default:
-			return nil, &APIError{Status: status, Code: apiErrorCode(body), Path: path}
+			code, message := apiErrorDetail(body)
+			return nil, &APIError{Status: status, Code: code, Message: message, Path: path}
 		}
 
 		if attempt < maxAttempts {
@@ -283,17 +300,27 @@ func (c *Client) do(ctx context.Context, p Priority, path string, query url.Valu
 	return body, resp.StatusCode, retryAfter, nil
 }
 
-// apiErrorCode extracts error.code from a Stripe error body, best effort.
-func apiErrorCode(body []byte) string {
+// apiErrorDetail extracts what Stripe said. Some errors carry only a
+// type and message, no code; the message is what a human needs.
+func apiErrorDetail(body []byte) (code, message string) {
 	var envelope struct {
 		Error struct {
-			Code string `json:"code"`
+			Code    string `json:"code"`
+			Type    string `json:"type"`
+			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if err := json.Unmarshal(body, &envelope); err != nil || envelope.Error.Code == "" {
-		return "unknown"
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return "unknown", ""
 	}
-	return envelope.Error.Code
+	code = envelope.Error.Code
+	if code == "" {
+		code = envelope.Error.Type
+	}
+	if code == "" {
+		code = "unknown"
+	}
+	return code, envelope.Error.Message
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {

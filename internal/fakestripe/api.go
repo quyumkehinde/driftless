@@ -72,7 +72,7 @@ func (s *Server) apiRoutes() *http.ServeMux {
 }
 
 func (s *Server) handleAccount(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, map[string]any{"id": AccountID, "object": "account", "livemode": false})
+	writeJSON(w, map[string]any{"id": AccountID, "object": "account"})
 }
 
 func (s *Server) handleGet(w http.ResponseWriter, objectType, id string) {
