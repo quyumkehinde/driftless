@@ -3,6 +3,9 @@ INSERT INTO driftless.backfill_runs (requested_by, since)
 VALUES ($1, $2)
 RETURNING *;
 
+-- name: GetRunningBackfillRun :one
+SELECT id FROM driftless.backfill_runs WHERE status = 'running' LIMIT 1;
+
 -- name: GetBackfillRun :one
 SELECT * FROM driftless.backfill_runs WHERE id = $1;
 

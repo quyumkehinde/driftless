@@ -136,7 +136,7 @@ Full command reference, generated from the binary's own help text, lives in [`do
 
 ## Limits, honestly
 
-Stripe only. Self-hosted only. Postgres only. No Stripe Connect yet (single-account mirrors). Payment methods are mirrored shallowly (per-customer, for customers with subscriptions). If you need a hosted control plane, that may come later; the OSS core is complete and stays that way.
+Stripe only. Self-hosted only. Postgres only. No Stripe Connect yet (single-account mirrors). Payment methods are mirrored shallowly (per-customer, for customers with subscriptions). If you need a hosted control plane, [leave an email on the waitlist](https://getdriftless.dev/#managed); the OSS core is complete and stays that way.
 
 ## Status
 

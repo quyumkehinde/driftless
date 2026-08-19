@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -130,10 +131,18 @@ func Plan(types []string) ([]string, error) {
 	return planned, nil
 }
 
-// Start creates a run and executes it to completion.
+// Start creates a run and executes it to completion. It refuses while
+// another run is in progress: overlapping fresh runs are safe but double
+// the API draw for no benefit. The pre-check gives the friendly error;
+// the partial unique index closes the race window.
 func (r *Runner) Start(ctx context.Context, opts Options) (int64, error) {
 	planned, err := Plan(opts.Types)
 	if err != nil {
+		return 0, err
+	}
+	if running, err := db.New(r.pool).GetRunningBackfillRun(ctx); err == nil {
+		return 0, &RunInProgressError{RunID: running}
+	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return 0, err
 	}
 	run, err := db.New(r.pool).CreateBackfillRun(ctx, db.CreateBackfillRunParams{
@@ -141,6 +150,13 @@ func (r *Runner) Start(ctx context.Context, opts Options) (int64, error) {
 		Since:       opts.Since,
 	})
 	if err != nil {
+		// two Starts raced past the pre-check: the index picked the loser
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" /* unique_violation */ {
+			if running, lookupErr := db.New(r.pool).GetRunningBackfillRun(ctx); lookupErr == nil {
+				return 0, &RunInProgressError{RunID: running}
+			}
+		}
 		return 0, err
 	}
 	for _, objectType := range planned {
@@ -155,6 +171,18 @@ func (r *Runner) Start(ctx context.Context, opts Options) (int64, error) {
 
 // ErrRunLocked reports that another process is already driving the run.
 var ErrRunLocked = errors.New("backfill: run is already being driven by another process")
+
+// RunInProgressError refuses a fresh run while another is in progress; a
+// crashed run counts until it is resumed or cancelled.
+type RunInProgressError struct {
+	RunID int64
+}
+
+func (e *RunInProgressError) Error() string {
+	return fmt.Sprintf(
+		"backfill: run %d is already in progress; resume it with --resume %d, or wait for it to finish",
+		e.RunID, e.RunID)
+}
 
 // Resume continues a crashed, interrupted, or deliberately cancelled run
 // from its cursors. Cancelled runs resume only through this explicit call,
@@ -267,6 +295,10 @@ func (r *Runner) runTask(ctx context.Context, task db.DriftlessBackfillTask, sin
 func (r *Runner) runListWalk(ctx context.Context, task db.DriftlessBackfillTask, since *time.Time, horizon time.Time) error {
 	path, query := listRequest(task.ObjectType, since)
 	cursor := task.Cursor
+	// resumed tasks continue their tallies; the task row is a snapshot
+	// from claim time, so the running totals live here
+	pagesDone := int64(task.PagesDone)
+	objectsDone := int64(task.ObjectsDone)
 
 	for {
 		if cursor != nil && *cursor != "" {
@@ -282,6 +314,11 @@ func (r *Runner) runListWalk(ctx context.Context, task db.DriftlessBackfillTask,
 		lastID, count, err := r.commitPage(ctx, task, page.Data, horizon)
 		if err != nil {
 			return err
+		}
+		pagesDone++
+		objectsDone += count
+		if r.progress != nil {
+			r.progress(task.ObjectType, pagesDone, objectsDone)
 		}
 		r.note(task.ObjectType, count)
 		if !page.HasMore {
@@ -324,6 +361,8 @@ func (r *Runner) runPaymentMethods(ctx context.Context, task db.DriftlessBackfil
 		return err
 	}
 
+	pagesDone := int64(task.PagesDone)
+	objectsDone := int64(task.ObjectsDone)
 	for _, customer := range customers {
 		query := url.Values{"limit": {strconv.Itoa(stripeapi.MaxPageLimit)}}
 		path := "/v1/customers/" + url.PathEscape(customer) + "/payment_methods"
@@ -335,6 +374,11 @@ func (r *Runner) runPaymentMethods(ctx context.Context, task db.DriftlessBackfil
 			_, count, err := r.commitPageWithCursor(ctx, task, page.Data, horizon, customer)
 			if err != nil {
 				return err
+			}
+			pagesDone++
+			objectsDone += count
+			if r.progress != nil {
+				r.progress(task.ObjectType, pagesDone, objectsDone)
 			}
 			r.note(task.ObjectType, count)
 			if !page.HasMore || len(page.Data) == 0 {
@@ -432,9 +476,6 @@ func (r *Runner) commitPageWithCursor(ctx context.Context, task db.DriftlessBack
 	})
 	if err != nil {
 		return "", 0, err
-	}
-	if r.progress != nil {
-		r.progress(task.ObjectType, int64(task.PagesDone)+1, int64(task.ObjectsDone)+count)
 	}
 	return lastID, count, nil
 }

@@ -410,3 +410,66 @@ func TestBackfillRecordsWatermark(t *testing.T) {
 		t.Fatal("backfilled object_state must carry the run horizon as watermark")
 	}
 }
+
+func TestBackfillRefusesConcurrentFreshRun(t *testing.T) {
+	runner, fs, pool := newTestRunner(t, nil)
+	fs.Put("customer", "cus_one", nil, "customer.created")
+
+	// a run in progress, as a crash leaves it: status running, no driver
+	var heldID int64
+	if err := pool.QueryRow(t.Context(), `
+		INSERT INTO driftless.backfill_runs (requested_by) VALUES ('cli')
+		RETURNING id`).Scan(&heldID); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := runner.Start(t.Context(), Options{RequestedBy: "cli"})
+	var inProgress *RunInProgressError
+	if !errors.As(err, &inProgress) {
+		t.Fatalf("second fresh run error = %v, want RunInProgressError", err)
+	}
+	if inProgress.RunID != heldID {
+		t.Errorf("refusal names run %d, want %d", inProgress.RunID, heldID)
+	}
+
+	// resuming the held run is the way forward, and afterward fresh runs
+	// start again
+	if err := runner.Resume(t.Context(), heldID); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if _, err := runner.Start(t.Context(), Options{RequestedBy: "cli"}); err != nil {
+		t.Errorf("fresh run after completion: %v", err)
+	}
+}
+
+func TestBackfillWalksMultiplePages(t *testing.T) {
+	pages := make(map[string]int64)
+	runner, fs, pool := newTestRunner(t, func(objectType string, pagesDone, _ int64) {
+		pages[objectType] = pagesDone
+	})
+
+	// more customers than one page at the Stripe ceiling can hold, so the
+	// runner must follow the cursor across the boundary
+	const customers = 150
+	for i := range customers {
+		fs.Put("customer", fmt.Sprintf("cus_%03d", i), map[string]any{
+			"email": fmt.Sprintf("c%03d@x.y", i),
+		}, "customer.created")
+	}
+
+	if _, err := runner.Start(t.Context(), Options{RequestedBy: "cli", Types: []string{"customer"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var mirrored int
+	if err := pool.QueryRow(t.Context(),
+		`SELECT count(*) FROM stripe.customers WHERE NOT is_deleted`).Scan(&mirrored); err != nil {
+		t.Fatal(err)
+	}
+	if mirrored != customers {
+		t.Errorf("mirrored = %d, want %d: objects past the first page were dropped", mirrored, customers)
+	}
+	if pages["customer"] != 2 {
+		t.Errorf("pages walked = %d, want 2", pages["customer"])
+	}
+}

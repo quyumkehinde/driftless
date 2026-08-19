@@ -149,6 +149,17 @@ func (q *Queries) GetBackfillRun(ctx context.Context, id int64) (DriftlessBackfi
 	return i, err
 }
 
+const getRunningBackfillRun = `-- name: GetRunningBackfillRun :one
+SELECT id FROM driftless.backfill_runs WHERE status = 'running' LIMIT 1
+`
+
+func (q *Queries) GetRunningBackfillRun(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, getRunningBackfillRun)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
 const listResumableRuns = `-- name: ListResumableRuns :many
 SELECT id, started_at, finished_at, requested_by, since, status FROM driftless.backfill_runs WHERE status = 'running' ORDER BY id
 `
