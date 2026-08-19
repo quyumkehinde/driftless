@@ -134,7 +134,7 @@ Full command reference, generated from the binary's own help text, lives in [`do
 - Prometheus metrics on `:8725/metrics`; recommended alert rules with runbook annotations ship in [`contrib/alerts.yaml`](contrib/alerts.yaml).
 - Deploy recipes for Docker Compose, systemd, and Kubernetes live in [`deploy/`](deploy/). Replicas beyond one are safe: work is claimed with `SKIP LOCKED` and scheduled jobs elect a leader per pass.
 
-## Limits, honestly
+## Limits
 
 Stripe only. Self-hosted only. Postgres only. No Stripe Connect yet (single-account mirrors). Payment methods are mirrored shallowly (per-customer, for customers with subscriptions). If you need a hosted control plane, [leave an email on the waitlist](https://getdriftless.dev/#managed); the OSS core is complete and stays that way.
 
