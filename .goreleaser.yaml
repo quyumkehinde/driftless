@@ -55,7 +55,14 @@ docker_manifests:
 signs:
   - cmd: cosign
     certificate: "${artifact}.pem"
-    args: ["sign-blob", "--output-certificate=${certificate}", "--output-signature=${signature}", "${artifact}", "--yes"]
+    args:
+      [
+        "sign-blob",
+        "--output-certificate=${certificate}",
+        "--output-signature=${signature}",
+        "${artifact}",
+        "--yes",
+      ]
     artifacts: checksum
     output: true
 
@@ -72,4 +79,4 @@ changelog:
 
 release:
   draft: false
-  prerelease: auto
+  prerelease: true
