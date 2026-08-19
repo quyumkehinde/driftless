@@ -10,26 +10,32 @@ Driftless is strictly **read-only against Stripe**: it never writes to your Stri
 
 ## Quickstart
 
-Ten minutes from zero to a proven-correct mirror. You need Docker, a Stripe API key (a restricted read-only `rk_...` key is recommended), and a webhook signing secret.
+Ten minutes from zero to a proven-correct mirror. You need Postgres 17+, a Stripe API key (a restricted read-only `rk_...` key is recommended), and a webhook signing secret.
 
 ```bash
-# 1. Start driftless + Postgres
-curl -fsSLO https://raw.githubusercontent.com/quyumkehinde/driftless/main/deploy/compose.yaml
-curl -fsSL https://raw.githubusercontent.com/quyumkehinde/driftless/main/deploy/.env.example -o .env
-$EDITOR .env          # paste your Stripe keys
-docker compose up -d
+# 1. Install: one static binary, no runtime
+#    https://github.com/quyumkehinde/driftless/releases
+tar xzf driftless_*.tar.gz && sudo install driftless /usr/local/bin/
 
-# 2. First-run setup: checks the environment, migrates, offers a backfill
-docker compose exec driftless driftless init
+# 2. Point it at your Postgres and your Stripe account
+export DRIFTLESS_DATABASE_URL='postgres://...'
+export DRIFTLESS_STRIPE_API_KEY='rk_test_...'
+export DRIFTLESS_STRIPE_WEBHOOK_SECRET='whsec_...'
 
-# 3. Point a Stripe webhook endpoint at your host
+# 3. First-run setup: environment checks, migrations, offer of a backfill
+driftless init
+
+# 4. Run it, and point a Stripe webhook endpoint at your host
 #    https://<your-host>/webhooks/stripe
 #    (dashboard -> Developers -> Webhooks; subscribe to the event types
 #    you mirror, or "all events"; unknown types are stored, never lost)
+driftless serve
 
-# 4. Prove it
-docker compose exec driftless driftless verify --full
+# 5. Prove it
+driftless verify --full
 ```
+
+Prefer containers? A Docker Compose quickstart, a distroless image at `ghcr.io/quyumkehinde/driftless`, and Kubernetes manifests ship in [`deploy/`](deploy/).
 
 `verify` exits `0` when your database provably matches Stripe, and `3` when it found drift (with a per-object report). From then on, serve keeps the mirror correct on its own: webhooks apply in seconds, a sweeper finds anything Stripe generated but never delivered, and a nightly verification runs by default.
 
