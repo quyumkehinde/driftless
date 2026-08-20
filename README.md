@@ -54,16 +54,76 @@ WHERE u.id = $1 AND NOT s.is_deleted
 ORDER BY s.created DESC LIMIT 1;
 ```
 
-**Reactions are LISTEN/NOTIFY.** Every applied change fires `pg_notify` on the `driftless_changes` channel, in the same transaction as the write, with a minimal payload: `{"type": "subscription", "id": "sub_123"}`. Your worker listens, re-reads the row, and acts:
+**Reactions are LISTEN/NOTIFY.** Every applied change fires `pg_notify` on the `driftless_changes` channel, in the same transaction as the write, with a minimal payload: `{"type": "subscription", "id": "sub_123"}`. Your worker listens, re-reads the row, and acts. By the time you are notified, the state is already committed, deduplicated, and ordered: no payload parsing, no signature checks, no duplicate or out-of-order handling in your code.
 
+The notification is a doorbell, not the mail: it carries ids only, and it is not durable, so a listener that was down misses the ring but never the row. The pattern below (catch-up scan on every connect, then listen) is complete on its own:
+
+<details open>
+<summary><strong>Go</strong> (pgx)</summary>
+
+```go
+conn, _ := pgx.Connect(ctx, dbURL) // dedicated connection, not a pool
+conn.Exec(ctx, "LISTEN driftless_changes")
+
+// catch up on anything missed while nobody was listening
+rows, _ := conn.Query(ctx,
+	"SELECT 'subscription', id FROM stripe.subscriptions WHERE updated_at > $1", since)
+// handle each row, then:
+
+for {
+	n, _ := conn.WaitForNotification(ctx) // {"type":"subscription","id":"sub_123"}
+	// read the row, act
+}
 ```
-LISTEN driftless_changes;
--- on notify: read the row, update entitlements, send the email
+
+</details>
+
+<details>
+<summary><strong>Node</strong> (pg)</summary>
+
+```js
+const client = new pg.Client({ connectionString: dbURL }); // dedicated, not a pool
+await client.connect();
+await client.query("LISTEN driftless_changes");
+
+// catch up on anything missed while nobody was listening
+await client.query(
+  "SELECT 'subscription' AS type, id FROM stripe.subscriptions WHERE updated_at > $1",
+  [since]);
+// handle each row, then:
+
+client.on("notification", (msg) => {
+  const { type, id } = JSON.parse(msg.payload); // read the row, act
+});
 ```
 
-By the time you are notified, the state is already committed, deduplicated, and ordered. Your reaction code reads rows; it never parses payloads, checks signatures, or handles duplicates and out-of-order delivery. If your listener is down for a while, nothing is lost: scan `updated_at` on startup to catch up.
+</details>
 
-**The event log is your archive.** `driftless.events` keeps raw events past Stripe's roughly 30-day window (90 days by default, `retention.events_days: 0` for forever): an audit trail for "what exactly did Stripe send", inspectable with `driftless events show evt_...`.
+<details>
+<summary><strong>Python</strong> (psycopg 3)</summary>
+
+```python
+conn = psycopg.connect(db_url, autocommit=True)  # dedicated, not a pool
+conn.execute("LISTEN driftless_changes")
+
+# catch up on anything missed while nobody was listening
+conn.execute(
+    "SELECT 'subscription', id FROM stripe.subscriptions WHERE updated_at > %s", (since,))
+# handle each row, then:
+
+for notice in conn.notifies():
+    change = json.loads(notice.payload)  # read the row, act
+```
+
+</details>
+
+Production notes:
+
+- The listener needs a **direct or session-pooled connection**. Transaction-mode poolers (pgbouncer, Supavisor) hand statements to arbitrary backend sessions, so `LISTEN` through them silently receives nothing. Everything else in your app can keep using the pooler.
+- Widen the catch-up query to every table your worker reacts to, and persist your own `since` cursor.
+- On Supabase, this works on the direct connection; alternatively, subscribe to changes on `stripe.*` tables with Supabase Realtime and skip LISTEN/NOTIFY entirely.
+
+**The event log is your archive.** Separate from the mirror tables, `driftless.events` keeps raw events past Stripe's roughly 30-day window (90 days by default, `retention.events_days: 0` for forever): an audit trail for "what exactly did Stripe send", inspectable with `driftless events show evt_...`.
 
 What you delete from your codebase: the webhook endpoint, the dedupe table, and the resync cron. Keeping all that correct is now driftless's job, and `verify` proves it is doing it.
 
@@ -134,7 +194,7 @@ Import reconstructs objects from sync-engine's typed columns and marks them impo
 
 | | Driftless | stripe/sync-engine | Hookdeck / Svix | Airbyte / Fivetran |
 |---|---|---|---|---|
-| Webhook receive + verify | yes | yes | yes | no |
+| Webhook receive + signature check | yes | yes | yes | no |
 | Dedupe guaranteed | yes | partial | best-effort, documented as such | n/a |
 | Out-of-order and same-second safe | yes | known open issue | disclaimed | n/a |
 | Detects never-delivered events | yes | no | no | no |
@@ -165,7 +225,7 @@ Full command reference, generated from the binary's own help text, lives in [`do
 
 ## Limits
 
-Stripe only. Self-hosted only. Postgres only. No Stripe Connect yet (single-account mirrors). Payment methods are mirrored shallowly (per-customer, for customers with subscriptions). If you need a hosted control plane, [leave an email on the waitlist](https://getdriftless.dev/#managed); the OSS core is complete and stays that way.
+Stripe only. Self-hosted only. Postgres only. No Stripe Connect yet (single-account mirrors). Payment methods are mirrored shallowly (per-customer, for customers with subscriptions). Everything that makes the mirror trustworthy lives in the open-source binary and always will; a paid tier, if one ever exists, only adds hosting and dashboards on top. If that is the part you want, [leave an email on the waitlist](https://getdriftless.dev/#managed).
 
 ## Status
 
