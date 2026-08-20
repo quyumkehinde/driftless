@@ -48,6 +48,34 @@ SELECT status, count(*) FROM stripe.subscriptions GROUP BY status;
 
 Every table carries typed, indexed columns for the hot fields and the full raw JSON alongside (`data`), so nothing Stripe sends is ever truncated away.
 
+## Using the mirror
+
+Day to day, the mirror replaces two things in your application: reads that used to be Stripe API calls, and reactions that used to be webhook handlers.
+
+**Reads are SQL.** Anywhere you call the Stripe API or maintain hand-rolled billing state, query the tables instead, and join them against your own:
+
+```sql
+-- can this user access the product?
+SELECT s.status IN ('active', 'trialing')
+FROM stripe.subscriptions s
+JOIN app.users u ON u.stripe_customer_id = s.customer
+WHERE u.id = $1 AND NOT s.is_deleted
+ORDER BY s.created DESC LIMIT 1;
+```
+
+**Reactions are LISTEN/NOTIFY.** Every applied change fires `pg_notify` on the `driftless_changes` channel, in the same transaction as the write, with a minimal payload: `{"type": "subscription", "id": "sub_123"}`. Your worker listens, re-reads the row, and acts:
+
+```
+LISTEN driftless_changes;
+-- on notify: read the row, update entitlements, send the email
+```
+
+By the time you are notified, the state is already committed, deduplicated, and ordered. Your reaction code reads rows; it never parses payloads, checks signatures, or handles duplicates and out-of-order delivery. If your listener is down for a while, nothing is lost: scan `updated_at` on startup to catch up.
+
+**The event log is your archive.** `driftless.events` keeps raw events past Stripe's roughly 30-day window (90 days by default, `retention.events_days: 0` for forever): an audit trail for "what exactly did Stripe send", inspectable with `driftless events show evt_...`.
+
+What you delete from your codebase: the webhook endpoint, the dedupe table, and the resync cron. Keeping all that correct is now driftless's job, and `verify` proves it is doing it.
+
 ## How it works
 
 Two dependencies: the `driftless` binary and your Postgres (17+). No queue, no broker, no third-party service.
