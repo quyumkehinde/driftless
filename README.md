@@ -37,22 +37,13 @@ driftless verify --full
 
 Prefer containers? A Docker Compose quickstart, a distroless image at `ghcr.io/quyumkehinde/driftless`, and Kubernetes manifests ship in [`deploy/`](deploy/).
 
-`verify` exits `0` when your database provably matches Stripe, and `3` when it found drift (with a per-object report). From then on, serve keeps the mirror correct on its own: webhooks apply in seconds, a sweeper finds anything Stripe generated but never delivered, and a nightly verification runs by default.
-
-Query your data like any other tables:
-
-```sql
-SELECT id, email, created FROM stripe.customers WHERE NOT is_deleted;
-SELECT status, count(*) FROM stripe.subscriptions GROUP BY status;
-```
-
-Every table carries typed, indexed columns for the hot fields and the full raw JSON alongside (`data`), so nothing Stripe sends is ever truncated away.
+`verify` exits `0` when your database provably matches Stripe, and `3` when it found drift, with a per-object report. From then on, serve keeps the mirror correct on its own: webhooks apply in seconds, a sweeper finds anything Stripe generated but never delivered, and a nightly verification runs by default.
 
 ## Using the mirror
 
 Day to day, the mirror replaces two things in your application: reads that used to be Stripe API calls, and reactions that used to be webhook handlers.
 
-**Reads are SQL.** Anywhere you call the Stripe API or maintain hand-rolled billing state, query the tables instead, and join them against your own:
+**Reads are SQL.** Every table carries typed, indexed columns for the hot fields and the full raw JSON alongside (`data`), so nothing Stripe sends is truncated away. Anywhere you call the Stripe API or maintain hand-rolled billing state, query the tables instead, and join them against your own:
 
 ```sql
 -- can this user access the product?
@@ -87,7 +78,16 @@ Two dependencies: the `driftless` binary and your Postgres (17+). No queue, no b
 - **Materialize**: clean per-object tables (`stripe.customers`, `stripe.invoices`, `stripe.subscriptions`, …) with soft deletes, generated columns, and the raw JSON preserved.
 - **Prove**: `driftless verify` reconciles your database against Stripe and reports (or repairs) any drift.
 
-What Driftless promises, precisely: every event Stripe delivers is recorded once, or Stripe gets a non-2xx and retries. Every event Stripe generates but fails to deliver is found by the sweeper while the events API still holds it. Object rows converge to Stripe's current truth regardless of delivery order, duplication, or ties. A `kill -9` at any moment loses no acknowledged data. (Note what it does not say: "exactly-once delivery" is not a thing anyone can promise you; recorded-exactly-once is.)
+## Guarantees
+
+Precisely what is promised:
+
+- Every event Stripe delivers is recorded exactly once, or Stripe gets a non-2xx and retries.
+- Every event Stripe generates but fails to deliver is found by the sweeper while the events API still holds it.
+- Object rows converge to Stripe's current truth regardless of delivery order, duplication, or same-second ties.
+- A `kill -9` at any moment loses no acknowledged data.
+
+Note what the list does not say: "exactly-once delivery" is not a thing anyone can promise you. Recorded-exactly-once and provable convergence are.
 
 ## Drift as a failing CI check
 
@@ -159,6 +159,7 @@ Full command reference, generated from the binary's own help text, lives in [`do
 | `import` | migrate from stripe/sync-engine |
 | `migrate up` / `migrate status` | schema migrations, embedded, forward-only |
 | `config print` | effective configuration, secrets redacted |
+
 - Prometheus metrics on `:8725/metrics`; recommended alert rules with runbook annotations ship in [`contrib/alerts.yaml`](contrib/alerts.yaml).
 - Deploy recipes for Docker Compose, systemd, and Kubernetes live in [`deploy/`](deploy/). Replicas beyond one are safe: work is claimed with `SKIP LOCKED` and scheduled jobs elect a leader per pass.
 
