@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/quyumkehinde/driftless/internal/fakestripe"
+	"github.com/quyumkehinde/driftless/internal/stripeapi"
 	"github.com/quyumkehinde/driftless/internal/testpg"
 )
 
@@ -58,7 +59,7 @@ func verifyMirrorMatchesStore(t *testing.T, pool *pgxpool.Pool, fs *fakestripe.S
 			if err := pool.QueryRow(ctx, `SELECT data FROM `+table+` WHERE id = $1`, id).Scan(&data); err != nil {
 				t.Fatalf("%s %s: %v", table, id, err)
 			}
-			want, _ := fs.Object(objectType, id)
+			want, _ := fs.Object(stripeapi.ObjectType(objectType), id)
 			wantJSON, _ := json.Marshal(want)
 			var got, expected map[string]any
 			_ = json.Unmarshal(data, &got)

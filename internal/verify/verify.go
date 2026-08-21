@@ -24,20 +24,26 @@ import (
 	"github.com/quyumkehinde/driftless/internal/stripeapi"
 )
 
-// Modes recorded on verifications rows.
+// Mode is the walk depth recorded on verifications rows.
+type Mode string
+
+// The verification modes.
 const (
-	ModeQuick = "quick"
-	ModeFull  = "full"
+	ModeQuick Mode = "quick"
+	ModeFull  Mode = "full"
 )
 
-// Drift kinds: how a mirror row can diverge from Stripe.
+// DriftKind is how a mirror row can diverge from Stripe.
+type DriftKind string
+
+// The drift kinds.
 const (
 	// KindMissing: Stripe has the object, the mirror does not.
-	KindMissing = "missing"
+	KindMissing DriftKind = "missing"
 	// KindStale: both have it, the stored data differs.
-	KindStale = "stale"
+	KindStale DriftKind = "stale"
 	// KindOrphaned: the mirror holds it live, Stripe no longer does.
-	KindOrphaned = "orphaned"
+	KindOrphaned DriftKind = "orphaned"
 )
 
 // DefaultSpotChecks is the quick-mode per-type sample size.
@@ -51,7 +57,7 @@ const quickWindow = 24 * time.Hour
 // methods are excluded: Stripe only lists them per customer, so there is
 // no account-wide walk to compare against. Subscription items are checked
 // through their parent subscription.
-var Types = []string{
+var Types = []stripeapi.ObjectType{
 	stripeapi.ObjectProduct,
 	stripeapi.ObjectPrice,
 	stripeapi.ObjectCustomer,
@@ -68,31 +74,31 @@ var Types = []string{
 // Options shape one verification pass.
 type Options struct {
 	Full       bool
-	Types      []string   // subset of Types; empty = all
-	Since      *time.Time // bound the walk to objects created on or after
+	Types      []stripeapi.ObjectType // subset of Types; empty = all
+	Since      *time.Time             // bound the walk to objects created on or after
 	Repair     bool
 	SpotChecks int // quick-mode sample size per type; 0 = DefaultSpotChecks
 }
 
 // Drift is one diverged object.
 type Drift struct {
-	ObjectType string `json:"object_type"`
-	ObjectID   string `json:"object_id"`
-	Kind       string `json:"kind"`
-	Repaired   bool   `json:"repaired"`
+	ObjectType stripeapi.ObjectType `json:"object_type"`
+	ObjectID   string               `json:"object_id"`
+	Kind       DriftKind            `json:"kind"`
+	Repaired   bool                 `json:"repaired"`
 }
 
 // TypeResult sums one object type's pass.
 type TypeResult struct {
-	ObjectType string `json:"object_type"`
-	Checked    int    `json:"checked"`
-	Drifted    int    `json:"drifted"`
-	Repaired   int    `json:"repaired"`
+	ObjectType stripeapi.ObjectType `json:"object_type"`
+	Checked    int                  `json:"checked"`
+	Drifted    int                  `json:"drifted"`
+	Repaired   int                  `json:"repaired"`
 }
 
 // Report is the full outcome of one verification.
 type Report struct {
-	Mode     string       `json:"mode"`
+	Mode     Mode         `json:"mode"`
 	Types    []TypeResult `json:"types"`
 	Drifts   []Drift      `json:"drifts"`
 	Checked  int          `json:"checked"`
@@ -101,7 +107,7 @@ type Report struct {
 }
 
 // Progress receives a line per finished type; nil is silent.
-type Progress func(objectType string, checked, drifted int)
+type Progress func(objectType stripeapi.ObjectType, checked, drifted int)
 
 // Metrics holds the verify prometheus instruments; long-running processes
 // register them, one-shot CLI runs pass nil.
@@ -153,11 +159,11 @@ func (r *Runner) WithMetrics(m *Metrics) *Runner {
 
 // Plan validates and orders the requested types, so callers can reject
 // unverifiable types before a run starts.
-func Plan(types []string) ([]string, error) {
+func Plan(types []stripeapi.ObjectType) ([]stripeapi.ObjectType, error) {
 	if len(types) == 0 {
 		return Types, nil
 	}
-	valid := make(map[string]bool, len(Types))
+	valid := make(map[stripeapi.ObjectType]bool, len(Types))
 	for _, objectType := range Types {
 		valid[objectType] = true
 	}
@@ -166,7 +172,7 @@ func Plan(types []string) ([]string, error) {
 			return nil, fmt.Errorf("verify: unknown or unverifiable object type %q", want)
 		}
 	}
-	var planned []string
+	var planned []stripeapi.ObjectType
 	for _, objectType := range Types {
 		for _, want := range types {
 			if want == objectType {
@@ -195,10 +201,11 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*Report, error) {
 	}
 	var recordedType *string
 	if len(opts.Types) == 1 {
-		recordedType = &planned[0]
+		t := string(planned[0])
+		recordedType = &t
 	}
 	verificationID, err := db.New(r.pool).CreateVerification(ctx, db.CreateVerificationParams{
-		Mode:       mode,
+		Mode:       string(mode),
 		ObjectType: recordedType,
 	})
 	if err != nil {
@@ -236,20 +243,20 @@ func (r *Runner) Run(ctx context.Context, opts Options) (*Report, error) {
 	}
 	if r.metrics != nil {
 		for _, tr := range report.Types {
-			r.metrics.Drift.WithLabelValues(tr.ObjectType).Set(float64(tr.Drifted))
+			r.metrics.Drift.WithLabelValues(string(tr.ObjectType)).Set(float64(tr.Drifted))
 		}
-		r.metrics.LastRun.WithLabelValues(mode).SetToCurrentTime()
+		r.metrics.LastRun.WithLabelValues(string(mode)).SetToCurrentTime()
 	}
 	return report, nil
 }
 
 // verifyType runs one type's pass: an exhaustive walk in full mode, a
 // recent-window walk plus random spot-checks in quick mode.
-func (r *Runner) verifyType(ctx context.Context, objectType string, opts Options) (TypeResult, []Drift, error) {
+func (r *Runner) verifyType(ctx context.Context, objectType stripeapi.ObjectType, opts Options) (TypeResult, []Drift, error) {
 	result := TypeResult{ObjectType: objectType}
 	var drifts []Drift
 
-	record := func(id, kind string) error {
+	record := func(id string, kind DriftKind) error {
 		drift := Drift{
 			ObjectType: objectType,
 			ObjectID:   id,
@@ -290,7 +297,7 @@ func (r *Runner) verifyType(ctx context.Context, objectType string, opts Options
 
 // walkCompare pages the type's list API, comparing every listed object to
 // its mirror row and every live mirror row in the window back to the walk.
-func (r *Runner) walkCompare(ctx context.Context, objectType string, from *time.Time, record func(id, kind string) error) (checked int, err error) {
+func (r *Runner) walkCompare(ctx context.Context, objectType stripeapi.ObjectType, from *time.Time, record func(id string, kind DriftKind) error) (checked int, err error) {
 	path, ok := stripeapi.CollectionPath(objectType)
 	if !ok {
 		return 0, fmt.Errorf("no collection path for %s", objectType)
@@ -359,7 +366,7 @@ func (r *Runner) walkCompare(ctx context.Context, objectType string, from *time.
 }
 
 // compareRow diffs one listed object against its mirror row.
-func (r *Runner) compareRow(ctx context.Context, objectType, id string, upstream []byte) (kind string, drifted bool, err error) {
+func (r *Runner) compareRow(ctx context.Context, objectType stripeapi.ObjectType, id string, upstream []byte) (kind DriftKind, drifted bool, err error) {
 	table, ok := mirror.Table(objectType)
 	if !ok {
 		return "", false, fmt.Errorf("no mirror table for %s", objectType)
@@ -375,7 +382,7 @@ func (r *Runner) compareRow(ctx context.Context, objectType, id string, upstream
 		return "", false, err
 	case isDeleted:
 		return KindMissing, true, nil
-	case !jsonEqual(stored, upstream):
+	case !jsonEqual(objectType, stored, upstream):
 		return KindStale, true, nil
 	}
 	return "", false, nil
@@ -383,7 +390,7 @@ func (r *Runner) compareRow(ctx context.Context, objectType, id string, upstream
 
 // orphanedIDs returns live mirror ids in the walked window that the walk
 // never listed: objects Stripe no longer has.
-func (r *Runner) orphanedIDs(ctx context.Context, objectType string, from *time.Time, seen map[string]bool) ([]string, error) {
+func (r *Runner) orphanedIDs(ctx context.Context, objectType stripeapi.ObjectType, from *time.Time, seen map[string]bool) ([]string, error) {
 	table, ok := mirror.Table(objectType)
 	if !ok {
 		return nil, fmt.Errorf("no mirror table for %s", objectType)
@@ -414,7 +421,7 @@ func (r *Runner) orphanedIDs(ctx context.Context, objectType string, from *time.
 
 // spotCheck fetches a random sample of live mirror rows by id and compares
 // each against Stripe, covering history the windowed walk skipped.
-func (r *Runner) spotCheck(ctx context.Context, objectType string, sample int, walkedFrom *time.Time, record func(id, kind string) error) (checked int, err error) {
+func (r *Runner) spotCheck(ctx context.Context, objectType stripeapi.ObjectType, sample int, walkedFrom *time.Time, record func(id string, kind DriftKind) error) (checked int, err error) {
 	table, ok := mirror.Table(objectType)
 	if !ok {
 		return 0, fmt.Errorf("no mirror table for %s", objectType)
@@ -464,7 +471,7 @@ func (r *Runner) spotCheck(ctx context.Context, objectType string, sample int, w
 			`SELECT data FROM `+table+` WHERE id = $1`, id).Scan(&stored); err != nil {
 			return checked, err
 		}
-		if !jsonEqual(stored, upstream) {
+		if !jsonEqual(objectType, stored, upstream) {
 			if err := record(id, KindStale); err != nil {
 				return checked, err
 			}
@@ -476,7 +483,7 @@ func (r *Runner) spotCheck(ctx context.Context, objectType string, sample int, w
 // repair re-fetches one object and applies its current truth under the
 // per-object lock, exactly the apply path's semantics: a 404 soft-deletes,
 // anything else upserts fresh state.
-func (r *Runner) repair(ctx context.Context, objectType, id string) error {
+func (r *Runner) repair(ctx context.Context, objectType stripeapi.ObjectType, id string) error {
 	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		if err := mirror.LockObject(ctx, tx, objectType, id); err != nil {
 			return err
@@ -502,9 +509,9 @@ func (r *Runner) repair(ctx context.Context, objectType, id string) error {
 			}
 		}
 		if err := db.New(tx).UpsertObjectState(ctx, db.UpsertObjectStateParams{
-			ObjectType: objectType,
+			ObjectType: string(objectType),
 			ObjectID:   id,
-			SyncSource: mirror.SyncSourceRepair,
+			SyncSource: string(mirror.SyncSourceRepair),
 		}); err != nil {
 			return err
 		}
@@ -512,9 +519,24 @@ func (r *Runner) repair(ctx context.Context, objectType, id string) error {
 	})
 }
 
-// jsonEqual compares two JSON documents structurally, so formatting and
-// key order differences never read as drift.
-func jsonEqual(a, b []byte) bool {
+// volatileFields lists, per object type, the fields Stripe mutates after
+// the last webhook event (post-delivery timestamps, per-read rotating
+// URLs), so the mirror can never converge on them. Verify excludes them
+// from comparison; types missing from the map have no known volatiles.
+var volatileFields = map[stripeapi.ObjectType]map[string]bool{
+	stripeapi.ObjectInvoice: {
+		"webhooks_delivered_at": true,
+		"invoice_pdf":           true,
+		"hosted_invoice_url":    true,
+	},
+	stripeapi.ObjectCharge: {
+		"receipt_url": true,
+	},
+}
+
+// jsonEqual compares two JSON documents structurally, ignoring formatting,
+// key order, and the type's volatile fields.
+func jsonEqual(objectType stripeapi.ObjectType, a, b []byte) bool {
 	var av, bv any
 	if err := json.Unmarshal(a, &av); err != nil {
 		return false
@@ -522,5 +544,32 @@ func jsonEqual(a, b []byte) bool {
 	if err := json.Unmarshal(b, &bv); err != nil {
 		return false
 	}
-	return reflect.DeepEqual(av, bv)
+	return reflect.DeepEqual(stripVolatile(volatileFields[objectType], av),
+		stripVolatile(volatileFields[objectType], bv))
+}
+
+// stripVolatile returns v with the given fields removed at every level.
+// A nil or empty exclude returns v unchanged.
+func stripVolatile(exclude map[string]bool, v any) any {
+	if len(exclude) == 0 {
+		return v
+	}
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			if !exclude[k] {
+				out[k] = stripVolatile(exclude, val)
+			}
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, val := range t {
+			out[i] = stripVolatile(exclude, val)
+		}
+		return out
+	default:
+		return v
+	}
 }

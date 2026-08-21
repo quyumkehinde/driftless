@@ -28,7 +28,7 @@ func startVerify(t *testing.T) (*Runner, *pgxpool.Pool, *fakestripe.Server) {
 
 // seed puts an object in the double and mirrors it, using the repair path
 // as the writer so both sides agree byte for byte.
-func seed(t *testing.T, r *Runner, fs *fakestripe.Server, objectType, id string, obj map[string]any, eventType string) {
+func seed(t *testing.T, r *Runner, fs *fakestripe.Server, objectType stripeapi.ObjectType, id string, obj map[string]any, eventType string) {
 	t.Helper()
 	fs.Put(objectType, id, obj, eventType)
 	if err := r.repair(t.Context(), objectType, id); err != nil {
@@ -68,7 +68,7 @@ func TestVerifyCleanMirrorFindsNothing(t *testing.T) {
 		t.Errorf("checked = %d, want 6", report.Checked)
 	}
 
-	var mode string
+	var mode Mode
 	var drifted int
 	if err := pool.QueryRow(t.Context(),
 		`SELECT mode, drifted FROM driftless.verifications ORDER BY id DESC LIMIT 1`).Scan(&mode, &drifted); err != nil {
@@ -94,11 +94,11 @@ func TestVerifyDetectsEveryDriftKind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	kinds := map[string]string{}
+	kinds := map[string]DriftKind{}
 	for _, d := range report.Drifts {
 		kinds[d.ObjectID] = d.Kind
 	}
-	want := map[string]string{"cus_1": KindStale, "cus_3": KindMissing, "cus_2": KindOrphaned}
+	want := map[string]DriftKind{"cus_1": KindStale, "cus_3": KindMissing, "cus_2": KindOrphaned}
 	if len(kinds) != len(want) {
 		t.Fatalf("drifts = %v, want exactly %v", kinds, want)
 	}
@@ -174,7 +174,7 @@ func TestQuickSpotChecksCatchOldDrift(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	kinds := map[string]string{}
+	kinds := map[string]DriftKind{}
 	for _, d := range report.Drifts {
 		kinds[d.ObjectID] = d.Kind
 	}
@@ -211,11 +211,61 @@ func TestQuickSinceWidensTheWalk(t *testing.T) {
 	}
 }
 
+func TestVerifyIgnoresVolatileStripeFields(t *testing.T) {
+	r, _, fs := startVerify(t)
+	invoice := map[string]any{
+		"customer": "cus_1", "status": "paid", "total": 4900,
+		"webhooks_delivered_at": nil,
+		"invoice_pdf":           "https://pay.stripe.com/invoice/one/pdf",
+		"hosted_invoice_url":    "https://invoice.stripe.com/i/one",
+	}
+	charge := map[string]any{
+		"customer": "cus_1", "status": "succeeded", "amount": 4900,
+		"receipt_url": "https://pay.stripe.com/receipts/one?s=ap",
+	}
+	seed(t, r, fs, "invoice", "in_1", invoice, "invoice.paid")
+	seed(t, r, fs, "charge", "ch_1", charge, "charge.succeeded")
+
+	// Stripe regenerates these server-side after every event; the mirror
+	// can never converge on them, so they must not read as drift.
+	fs.Put("invoice", "in_1", map[string]any{
+		"customer": "cus_1", "status": "paid", "total": 4900,
+		"webhooks_delivered_at": 1787332358,
+		"invoice_pdf":           "https://pay.stripe.com/invoice/two/pdf",
+		"hosted_invoice_url":    "https://invoice.stripe.com/i/two",
+	}, "")
+	fs.Put("charge", "ch_1", map[string]any{
+		"customer": "cus_1", "status": "succeeded", "amount": 4900,
+		"receipt_url": "https://pay.stripe.com/receipts/two?s=ap",
+	}, "")
+
+	report, err := r.Run(t.Context(), Options{Full: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Drifted != 0 {
+		t.Errorf("volatile-only changes: drifted=%d, want 0; drifts=%v", report.Drifted, report.Drifts)
+	}
+
+	// a real field change underneath the volatile noise still drifts
+	fs.Put("charge", "ch_1", map[string]any{
+		"customer": "cus_1", "status": "succeeded", "amount": 9900,
+		"receipt_url": "https://pay.stripe.com/receipts/three?s=ap",
+	}, "")
+	report, err = r.Run(t.Context(), Options{Full: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Drifted != 1 || report.Drifts[0].Kind != KindStale || report.Drifts[0].ObjectID != "ch_1" {
+		t.Errorf("real change: drifted=%d drifts=%v, want ch_1 stale", report.Drifted, report.Drifts)
+	}
+}
+
 func TestPlanRejectsUnverifiableTypes(t *testing.T) {
-	if _, err := Plan([]string{"payment_method"}); err == nil {
+	if _, err := Plan([]stripeapi.ObjectType{"payment_method"}); err == nil {
 		t.Error("payment_method must be rejected: Stripe has no account-wide listing to compare")
 	}
-	if _, err := Plan([]string{"subscription_item"}); err == nil {
+	if _, err := Plan([]stripeapi.ObjectType{"subscription_item"}); err == nil {
 		t.Error("subscription_item must be rejected: verified through its parent subscription")
 	}
 	planned, err := Plan(nil)

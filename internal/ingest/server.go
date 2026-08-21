@@ -177,7 +177,7 @@ func (s *Server) record(r *http.Request, event eventEnvelope, body []byte) (inse
 			EventID:  event.ID,
 			Type:     event.Type,
 			Created:  time.Unix(event.Created, 0).UTC(),
-			Source:   mirror.EventSourceWebhook,
+			Source:   string(mirror.EventSourceWebhook),
 			Payload:  body,
 			Livemode: event.Livemode,
 		}
@@ -206,7 +206,7 @@ func (s *Server) record(r *http.Request, event eventEnvelope, body []byte) (inse
 			return nil
 		}
 		if _, _, err := s.queue.Enqueue(ctx, tx, queue.EnqueueParams{
-			ObjectType:   objectType,
+			ObjectType:   string(objectType),
 			ObjectID:     event.Data.Object.ID,
 			EventID:      event.ID,
 			EventCreated: time.Unix(event.Created, 0).UTC(),

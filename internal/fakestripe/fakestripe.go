@@ -36,9 +36,9 @@ type Server struct {
 	secret string
 
 	mu       sync.Mutex
-	objects  map[string]map[string]map[string]any // objectType -> id -> object
-	order    map[string][]string                  // objectType -> ids in insertion order
-	events   []Event                              // append-only, oldest first
+	objects  map[stripeapi.ObjectType]map[string]map[string]any // objectType -> id -> object
+	order    map[stripeapi.ObjectType][]string                  // objectType -> ids in insertion order
+	events   []Event                                            // append-only, oldest first
 	clock    time.Time
 	seq      int
 	instance int64
@@ -60,8 +60,8 @@ func New(t *testing.T, secret string) *Server {
 	s := &Server{
 		t:        t,
 		secret:   secret,
-		objects:  make(map[string]map[string]map[string]any),
-		order:    make(map[string][]string),
+		objects:  make(map[stripeapi.ObjectType]map[string]map[string]any),
+		order:    make(map[stripeapi.ObjectType][]string),
 		clock:    time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		instance: instanceSeq.Add(1),
 	}
@@ -82,7 +82,7 @@ func (s *Server) Advance(d time.Duration) {
 
 // Put stores (or replaces) an object and appends the matching event.
 // The object's "id" and "object" fields are set from the arguments.
-func (s *Server) Put(objectType, id string, obj map[string]any, eventType string) Event {
+func (s *Server) Put(objectType stripeapi.ObjectType, id string, obj map[string]any, eventType string) Event {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.putLocked(objectType, id, obj, eventType)
@@ -90,7 +90,7 @@ func (s *Server) Put(objectType, id string, obj map[string]any, eventType string
 
 // PutTied is Put with the event stamped at the same instant as the
 // previous event, for same-second ordering-tie scenarios.
-func (s *Server) PutTied(objectType, id string, obj map[string]any, eventType string) Event {
+func (s *Server) PutTied(objectType stripeapi.ObjectType, id string, obj map[string]any, eventType string) Event {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// appendEvent advances the clock by one second; rewinding first pins
@@ -99,13 +99,13 @@ func (s *Server) PutTied(objectType, id string, obj map[string]any, eventType st
 	return s.putLocked(objectType, id, obj, eventType)
 }
 
-func (s *Server) putLocked(objectType, id string, obj map[string]any, eventType string) Event {
+func (s *Server) putLocked(objectType stripeapi.ObjectType, id string, obj map[string]any, eventType string) Event {
 	copied := make(map[string]any, len(obj)+2)
 	for k, v := range obj {
 		copied[k] = v
 	}
 	copied["id"] = id
-	copied["object"] = objectType
+	copied["object"] = string(objectType)
 	// every real Stripe object carries its creation time; updates keep the
 	// original, the way Stripe does
 	if copied["created"] == nil {
@@ -129,13 +129,13 @@ func (s *Server) putLocked(objectType, id string, obj map[string]any, eventType 
 
 // Delete removes an object and appends the matching deleted event, whose
 // data.object carries "deleted": true the way Stripe sends it.
-func (s *Server) Delete(objectType, id string, eventType string) Event {
+func (s *Server) Delete(objectType stripeapi.ObjectType, id string, eventType string) Event {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	obj := s.objects[objectType][id]
 	if obj == nil {
-		obj = map[string]any{"id": id, "object": objectType}
+		obj = map[string]any{"id": id, "object": string(objectType)}
 	}
 	tombstone := make(map[string]any, len(obj)+1)
 	for k, v := range obj {
@@ -146,7 +146,7 @@ func (s *Server) Delete(objectType, id string, eventType string) Event {
 	// Stripe keeps serving deleted objects as 200 stubs on GET while
 	// omitting them from listings; the double stores the stub so both
 	// behaviors fall out naturally.
-	s.objects[objectType][id] = map[string]any{"id": id, "object": objectType, "deleted": true}
+	s.objects[objectType][id] = map[string]any{"id": id, "object": string(objectType), "deleted": true}
 	for i, oid := range s.order[objectType] {
 		if oid == id {
 			s.order[objectType] = append(s.order[objectType][:i], s.order[objectType][i+1:]...)
@@ -158,7 +158,7 @@ func (s *Server) Delete(objectType, id string, eventType string) Event {
 
 // Object returns a copy of a stored live object; deletion stubs report
 // ok=false, matching what listings and mirror-parity checks expect.
-func (s *Server) Object(objectType, id string) (map[string]any, bool) {
+func (s *Server) Object(objectType stripeapi.ObjectType, id string) (map[string]any, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	obj, ok := s.objects[objectType][id]

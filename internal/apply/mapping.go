@@ -15,14 +15,14 @@ import (
 // Target identifies the one primary object an event pokes. Related objects
 // are never fanned out; they have their own events.
 type Target struct {
-	ObjectType string
+	ObjectType stripeapi.ObjectType
 	ObjectID   string
 }
 
 // exactTypes maps event types that are enumerated individually. These take
 // precedence over prefix families: customer.tax_id.created must not resolve
 // through a bare customer prefix, because its data.object is a tax id.
-var exactTypes = map[string]string{
+var exactTypes = map[string]stripeapi.ObjectType{
 	"customer.created": stripeapi.ObjectCustomer,
 	"customer.updated": stripeapi.ObjectCustomer,
 	"customer.deleted": stripeapi.ObjectCustomer,
@@ -65,7 +65,7 @@ var exactTypes = map[string]string{
 // resolve through exactTypes only.
 var prefixFamilies = []struct {
 	prefix     string
-	objectType string
+	objectType stripeapi.ObjectType
 }{
 	{"customer.subscription.", stripeapi.ObjectSubscription},
 	{"invoice.", stripeapi.ObjectInvoice},
@@ -93,7 +93,7 @@ func SubscribedEventTypes() []string {
 // ResolveType maps an event type to the object type it pokes. ok is false
 // for unknown types; callers must still store and count those, never
 // silently discard them.
-func ResolveType(eventType string) (objectType string, ok bool) {
+func ResolveType(eventType string) (objectType stripeapi.ObjectType, ok bool) {
 	if t, found := exactTypes[eventType]; found {
 		return t, true
 	}

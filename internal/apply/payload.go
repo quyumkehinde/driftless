@@ -50,11 +50,12 @@ func (e *Engine) applyPayload(ctx context.Context, tx pgx.Tx, job queue.Job, pay
 			deref(job.LatestEventID), job.ObjectType, job.ObjectID, err)
 	}
 
-	if job.ObjectType == stripeapi.ObjectSubscription {
+	objectType := stripeapi.ObjectType(job.ObjectType)
+	if objectType == stripeapi.ObjectSubscription {
 		if err := e.upsertSubscription(ctx, tx, job.ObjectID, object); err != nil {
 			return err
 		}
-	} else if err := mirror.UpsertObject(ctx, tx, job.ObjectType, job.ObjectID, object); err != nil {
+	} else if err := mirror.UpsertObject(ctx, tx, objectType, job.ObjectID, object); err != nil {
 		return err
 	}
 	return e.finishApplied(ctx, tx, job, mirror.SyncSourcePayload)

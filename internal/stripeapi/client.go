@@ -94,7 +94,7 @@ func NewMetrics(reg *prometheus.Registry, limiter *Limiter) *Metrics {
 
 // CollectionPath returns the API collection path for an object type, the
 // single source every lister derives its endpoints from.
-func CollectionPath(objectType string) (string, bool) {
+func CollectionPath(objectType ObjectType) (string, bool) {
 	path, ok := objectPaths[objectType]
 	return path, ok
 }
@@ -133,7 +133,7 @@ func LastID(page *ListPage) (string, error) {
 }
 
 // objectPaths maps object types to their API collection paths.
-var objectPaths = map[string]string{
+var objectPaths = map[ObjectType]string{
 	ObjectCustomer:         "/v1/customers",
 	ObjectSubscription:     "/v1/subscriptions",
 	ObjectSubscriptionItem: "/v1/subscription_items",
@@ -184,7 +184,7 @@ func New(baseURL, apiKey string, limiter *Limiter, metrics *Metrics) *Client {
 func (c *Client) Key() string { return c.apiKey }
 
 // GetObject fetches one object by type and id, returning the raw JSON.
-func (c *Client) GetObject(ctx context.Context, p Priority, objectType, id string) (json.RawMessage, error) {
+func (c *Client) GetObject(ctx context.Context, p Priority, objectType ObjectType, id string) (json.RawMessage, error) {
 	base, ok := objectPaths[objectType]
 	if !ok {
 		return nil, fmt.Errorf("stripe: unknown object type %q", objectType)

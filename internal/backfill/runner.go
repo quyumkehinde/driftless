@@ -43,7 +43,7 @@ const pageRetryDelay = 2 * time.Second
 // foreign joins resolve. Payment methods run after subscriptions because
 // their shallow backfill covers exactly the customers with a live
 // subscription, which the mirror knows only once subscriptions landed.
-var TypeOrder = []string{
+var TypeOrder = []stripeapi.ObjectType{
 	stripeapi.ObjectProduct,
 	stripeapi.ObjectPrice,
 	stripeapi.ObjectCustomer,
@@ -77,14 +77,14 @@ func NewMetrics(reg *prometheus.Registry) *Metrics {
 
 // Options shape one backfill run.
 type Options struct {
-	Since       *time.Time // nil = full history
-	Types       []string   // nil = every type, in TypeOrder
-	RequestedBy string     // 'cli' or 'auto-init'
+	Since       *time.Time             // nil = full history
+	Types       []stripeapi.ObjectType // nil = every type, in TypeOrder
+	RequestedBy string                 // 'cli' or 'auto-init'
 }
 
 // Progress receives a line per page so the CLI can show liveness; nil is
 // silent.
-type Progress func(objectType string, pagesDone, objectsDone int64)
+type Progress func(objectType stripeapi.ObjectType, pagesDone, objectsDone int64)
 
 // Runner drives backfill runs.
 type Runner struct {
@@ -107,15 +107,15 @@ func NewRunner(pool *pgxpool.Pool, client *stripeapi.Client, logger *slog.Logger
 }
 
 // Plan returns the types a run with these options would walk, in order.
-func Plan(types []string) ([]string, error) {
+func Plan(types []stripeapi.ObjectType) ([]stripeapi.ObjectType, error) {
 	if len(types) == 0 {
 		return TypeOrder, nil
 	}
-	valid := make(map[string]bool, len(TypeOrder))
+	valid := make(map[stripeapi.ObjectType]bool, len(TypeOrder))
 	for _, objectType := range TypeOrder {
 		valid[objectType] = true
 	}
-	var planned []string
+	var planned []stripeapi.ObjectType
 	for _, objectType := range TypeOrder {
 		for _, want := range types {
 			if want == objectType {
@@ -161,7 +161,7 @@ func (r *Runner) Start(ctx context.Context, opts Options) (int64, error) {
 	}
 	for _, objectType := range planned {
 		if _, err := db.New(r.pool).CreateBackfillTask(ctx, db.CreateBackfillTaskParams{
-			RunID: run.ID, ObjectType: objectType,
+			RunID: run.ID, ObjectType: string(objectType),
 		}); err != nil {
 			return run.ID, err
 		}
@@ -283,17 +283,18 @@ func (r *Runner) runTask(ctx context.Context, task db.DriftlessBackfillTask, sin
 	// the freshness horizon: an object already updated by an event newer
 	// than run start must not be clobbered by a stale list page
 	horizon := run.StartedAt
+	objectType := stripeapi.ObjectType(task.ObjectType)
 
-	if task.ObjectType == stripeapi.ObjectPaymentMethod {
+	if objectType == stripeapi.ObjectPaymentMethod {
 		return r.runPaymentMethods(ctx, task, horizon)
 	}
-	return r.runListWalk(ctx, task, since, horizon)
+	return r.runListWalk(ctx, objectType, task, since, horizon)
 }
 
 // runListWalk pages one collection, upserting each page and advancing the
 // cursor in a single transaction per page.
-func (r *Runner) runListWalk(ctx context.Context, task db.DriftlessBackfillTask, since *time.Time, horizon time.Time) error {
-	path, query := listRequest(task.ObjectType, since)
+func (r *Runner) runListWalk(ctx context.Context, objectType stripeapi.ObjectType, task db.DriftlessBackfillTask, since *time.Time, horizon time.Time) error {
+	path, query := listRequest(objectType, since)
 	cursor := task.Cursor
 	// resumed tasks continue their tallies; the task row is a snapshot
 	// from claim time, so the running totals live here
@@ -318,9 +319,9 @@ func (r *Runner) runListWalk(ctx context.Context, task db.DriftlessBackfillTask,
 		pagesDone++
 		objectsDone += count
 		if r.progress != nil {
-			r.progress(task.ObjectType, pagesDone, objectsDone)
+			r.progress(objectType, pagesDone, objectsDone)
 		}
-		r.note(task.ObjectType, count)
+		r.note(objectType, count)
 		if !page.HasMore {
 			break
 		}
@@ -335,6 +336,7 @@ func (r *Runner) runListWalk(ctx context.Context, task db.DriftlessBackfillTask,
 // only for customers holding a live subscription in the mirror. Deep
 // payment method coverage arrives through events.
 func (r *Runner) runPaymentMethods(ctx context.Context, task db.DriftlessBackfillTask, horizon time.Time) error {
+	objectType := stripeapi.ObjectType(task.ObjectType)
 	// the cursor for this task is the last customer id fully processed
 	var afterCustomer string
 	if task.Cursor != nil {
@@ -378,9 +380,9 @@ func (r *Runner) runPaymentMethods(ctx context.Context, task db.DriftlessBackfil
 			pagesDone++
 			objectsDone += count
 			if r.progress != nil {
-				r.progress(task.ObjectType, pagesDone, objectsDone)
+				r.progress(objectType, pagesDone, objectsDone)
 			}
-			r.note(task.ObjectType, count)
+			r.note(objectType, count)
 			if !page.HasMore || len(page.Data) == 0 {
 				break
 			}
@@ -444,6 +446,7 @@ func (r *Runner) commitPage(ctx context.Context, task db.DriftlessBackfillTask, 
 }
 
 func (r *Runner) commitPageWithCursor(ctx context.Context, task db.DriftlessBackfillTask, items []json.RawMessage, horizon time.Time, cursorOverride string) (lastID string, count int64, err error) {
+	objectType := stripeapi.ObjectType(task.ObjectType)
 	err = pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		for _, item := range items {
 			var envelope struct {
@@ -454,7 +457,7 @@ func (r *Runner) commitPageWithCursor(ctx context.Context, task db.DriftlessBack
 			}
 			lastID = envelope.ID
 
-			wrote, err := r.upsertGuarded(ctx, tx, task.ObjectType, envelope.ID, item, horizon)
+			wrote, err := r.upsertGuarded(ctx, tx, objectType, envelope.ID, item, horizon)
 			if err != nil {
 				return err
 			}
@@ -483,13 +486,13 @@ func (r *Runner) commitPageWithCursor(ctx context.Context, task db.DriftlessBack
 // upsertGuarded writes one object under its advisory lock unless an event
 // newer than the run's start already updated it, in which case the page
 // item is a stale snapshot and is skipped.
-func (r *Runner) upsertGuarded(ctx context.Context, tx pgx.Tx, objectType, id string, item json.RawMessage, horizon time.Time) (bool, error) {
+func (r *Runner) upsertGuarded(ctx context.Context, tx pgx.Tx, objectType stripeapi.ObjectType, id string, item json.RawMessage, horizon time.Time) (bool, error) {
 	if err := mirror.LockObject(ctx, tx, objectType, id); err != nil {
 		return false, err
 	}
 
 	state, err := db.New(tx).GetObjectState(ctx, db.GetObjectStateParams{
-		ObjectType: objectType, ObjectID: id,
+		ObjectType: string(objectType), ObjectID: id,
 	})
 	if err == nil && state.LastEventCreated != nil && state.LastEventCreated.After(horizon) {
 		return false, nil // fresher truth already applied
@@ -507,10 +510,10 @@ func (r *Runner) upsertGuarded(ctx context.Context, tx pgx.Tx, objectType, id st
 	}
 
 	if err := db.New(tx).UpsertObjectState(ctx, db.UpsertObjectStateParams{
-		ObjectType:       objectType,
+		ObjectType:       string(objectType),
 		ObjectID:         id,
 		LastEventCreated: &horizon,
-		SyncSource:       mirror.SyncSourceBackfill,
+		SyncSource:       string(mirror.SyncSourceBackfill),
 	}); err != nil {
 		return false, err
 	}
@@ -518,7 +521,7 @@ func (r *Runner) upsertGuarded(ctx context.Context, tx pgx.Tx, objectType, id st
 }
 
 // listRequest builds the collection path and base query for one type.
-func listRequest(objectType string, since *time.Time) (string, url.Values) {
+func listRequest(objectType stripeapi.ObjectType, since *time.Time) (string, url.Values) {
 	query := url.Values{"limit": {strconv.Itoa(stripeapi.MaxPageLimit)}}
 	if since != nil {
 		query.Set("created[gte]", strconv.FormatInt(since.Unix(), 10))
@@ -532,8 +535,8 @@ func listRequest(objectType string, since *time.Time) (string, url.Values) {
 	return path, query
 }
 
-func (r *Runner) note(objectType string, count int64) {
+func (r *Runner) note(objectType stripeapi.ObjectType, count int64) {
 	if r.metrics != nil {
-		r.metrics.Objects.WithLabelValues(objectType).Add(float64(count))
+		r.metrics.Objects.WithLabelValues(string(objectType)).Add(float64(count))
 	}
 }

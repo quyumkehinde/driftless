@@ -147,7 +147,7 @@ func TestEventsEndpoint(t *testing.T) {
 // the canonical object type list. Checkout sessions route explicitly, so
 // the plural map carries the other twelve.
 func TestPluralPathsCoverAllTypes(t *testing.T) {
-	covered := map[string]bool{stripeapi.ObjectCheckoutSession: true}
+	covered := map[stripeapi.ObjectType]bool{stripeapi.ObjectCheckoutSession: true}
 	for _, objectType := range pluralPaths {
 		covered[objectType] = true
 	}

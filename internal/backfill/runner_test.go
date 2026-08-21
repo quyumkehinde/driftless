@@ -167,7 +167,7 @@ func TestBackfillFreshnessGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := runner.Start(ctx, Options{RequestedBy: "cli", Types: []string{"customer"}}); err != nil {
+	if _, err := runner.Start(ctx, Options{RequestedBy: "cli", Types: []stripeapi.ObjectType{"customer"}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -194,7 +194,7 @@ func TestBackfillResumeAfterInterruption(t *testing.T) {
 	var runner *Runner
 	var fs *fakestripe.Server
 	var pool *pgxpool.Pool
-	runner, fs, pool = newTestRunner(t, func(objectType string, _, _ int64) {
+	runner, fs, pool = newTestRunner(t, func(objectType stripeapi.ObjectType, _, _ int64) {
 		if objectType == "customer" {
 			cancel()
 		}
@@ -239,18 +239,18 @@ func TestPlan(t *testing.T) {
 	if err != nil || !slices.Equal(all, TypeOrder) {
 		t.Errorf("Plan(nil) = %v, %v", all, err)
 	}
-	subset, err := Plan([]string{"invoice", "customer"})
+	subset, err := Plan([]stripeapi.ObjectType{"invoice", "customer"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	// dependency order preserved regardless of request order
-	if !slices.Equal(subset, []string{"customer", "invoice"}) {
+	if !slices.Equal(subset, []stripeapi.ObjectType{"customer", "invoice"}) {
 		t.Errorf("Plan subset = %v, want customer before invoice", subset)
 	}
-	if _, err := Plan([]string{"subscription_item"}); err == nil {
+	if _, err := Plan([]stripeapi.ObjectType{"subscription_item"}); err == nil {
 		t.Error("subscription_item is not listable; Plan must reject it")
 	}
-	if _, err := Plan([]string{"plan"}); err == nil {
+	if _, err := Plan([]stripeapi.ObjectType{"plan"}); err == nil {
 		t.Error("unknown type must be rejected")
 	}
 }
@@ -263,7 +263,7 @@ func TestBackfillSince(t *testing.T) {
 	fs.Put("customer", "cus_new", map[string]any{"email": "new@x.y", "created": 2000000}, "customer.created")
 
 	since := time.Unix(1500000, 0).UTC()
-	if _, err := runner.Start(ctx, Options{RequestedBy: "cli", Since: &since, Types: []string{"customer"}}); err != nil {
+	if _, err := runner.Start(ctx, Options{RequestedBy: "cli", Since: &since, Types: []stripeapi.ObjectType{"customer"}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -279,7 +279,7 @@ func TestBackfillSince(t *testing.T) {
 func TestRunLockPreventsConcurrentDrivers(t *testing.T) {
 	release := make(chan struct{})
 	entered := make(chan struct{}, 1)
-	runner, fs, pool := newTestRunner(t, func(_ string, _, _ int64) {
+	runner, fs, pool := newTestRunner(t, func(_ stripeapi.ObjectType, _, _ int64) {
 		select {
 		case entered <- struct{}{}:
 		default:
@@ -320,7 +320,7 @@ func TestRunLockPreventsConcurrentDrivers(t *testing.T) {
 func TestCancelledRunResumesOnlyExplicitly(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	runner, fs, pool := newTestRunner(t, func(objectType string, _, _ int64) {
+	runner, fs, pool := newTestRunner(t, func(objectType stripeapi.ObjectType, _, _ int64) {
 		if objectType == "customer" {
 			cancel()
 		}
@@ -373,7 +373,7 @@ func TestBackfillTerminalErrorFailsFast(t *testing.T) {
 	fs.FailRate(1.0, 401)
 
 	start := time.Now()
-	_, err := runner.Start(ctx, Options{RequestedBy: "cli", Types: []string{"customer"}})
+	_, err := runner.Start(ctx, Options{RequestedBy: "cli", Types: []stripeapi.ObjectType{"customer"}})
 	if err == nil {
 		t.Fatal("terminal API error must fail the run")
 	}
@@ -395,7 +395,7 @@ func TestBackfillRecordsWatermark(t *testing.T) {
 	ctx := context.Background()
 
 	fs.Put("customer", "cus_w", nil, "customer.created")
-	if _, err := runner.Start(ctx, Options{RequestedBy: "cli", Types: []string{"customer"}}); err != nil {
+	if _, err := runner.Start(ctx, Options{RequestedBy: "cli", Types: []stripeapi.ObjectType{"customer"}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -443,8 +443,8 @@ func TestBackfillRefusesConcurrentFreshRun(t *testing.T) {
 }
 
 func TestBackfillWalksMultiplePages(t *testing.T) {
-	pages := make(map[string]int64)
-	runner, fs, pool := newTestRunner(t, func(objectType string, pagesDone, _ int64) {
+	pages := make(map[stripeapi.ObjectType]int64)
+	runner, fs, pool := newTestRunner(t, func(objectType stripeapi.ObjectType, pagesDone, _ int64) {
 		pages[objectType] = pagesDone
 	})
 
@@ -457,7 +457,7 @@ func TestBackfillWalksMultiplePages(t *testing.T) {
 		}, "customer.created")
 	}
 
-	if _, err := runner.Start(t.Context(), Options{RequestedBy: "cli", Types: []string{"customer"}}); err != nil {
+	if _, err := runner.Start(t.Context(), Options{RequestedBy: "cli", Types: []stripeapi.ObjectType{"customer"}}); err != nil {
 		t.Fatal(err)
 	}
 

@@ -10,12 +10,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/quyumkehinde/driftless/internal/fakestripe"
+	"github.com/quyumkehinde/driftless/internal/stripeapi"
 	"github.com/quyumkehinde/driftless/internal/testpg"
 )
 
 // mirrorMatches compares a mirror row's data against fakestripe's own
 // store, normalizing both through JSON.
-func mirrorMatches(t *testing.T, pool *pgxpool.Pool, fs *fakestripe.Server, table, objectType, id string) {
+func mirrorMatches(t *testing.T, pool *pgxpool.Pool, fs *fakestripe.Server, table string, objectType stripeapi.ObjectType, id string) {
 	t.Helper()
 	var data []byte
 	err := pool.QueryRow(context.Background(),
@@ -100,7 +101,11 @@ func TestLifeOfASubscription(t *testing.T) {
 	waitForDrain(t, pool)
 
 	// every affected table converged to upstream truth
-	for _, obj := range []struct{ table, objectType, id string }{
+	for _, obj := range []struct {
+		table      string
+		objectType stripeapi.ObjectType
+		id         string
+	}{
 		{"stripe.customers", "customer", "cus_life"},
 		{"stripe.products", "product", "prod_life"},
 		{"stripe.prices", "price", "price_life"},

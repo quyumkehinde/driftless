@@ -10,7 +10,7 @@ import (
 func TestResolveType(t *testing.T) {
 	tests := []struct {
 		eventType  string
-		objectType string
+		objectType stripeapi.ObjectType
 		ok         bool
 	}{
 		// customer: exact three only
@@ -155,7 +155,7 @@ func TestResolveEvent(t *testing.T) {
 // TestMappingTargetsAreCanonical asserts every object type the event
 // mapping can produce is a canonical type the mirror can store.
 func TestMappingTargetsAreCanonical(t *testing.T) {
-	canonical := make(map[string]bool, len(stripeapi.AllObjectTypes))
+	canonical := make(map[stripeapi.ObjectType]bool, len(stripeapi.AllObjectTypes))
 	for _, objectType := range stripeapi.AllObjectTypes {
 		canonical[objectType] = true
 	}

@@ -23,7 +23,7 @@ import (
 // sync-engine's layout, which mirrors ours by design.
 var tableOrder = []struct {
 	table      string
-	objectType string
+	objectType stripeapi.ObjectType
 }{
 	{"products", stripeapi.ObjectProduct},
 	{"prices", stripeapi.ObjectPrice},
@@ -136,7 +136,7 @@ func (i *Importer) Run(ctx context.Context, sourceSchema string) (Result, error)
 // reconstruction of the object from typed columns. Existing mirror rows
 // are never overwritten; whatever the mirror already knows is fresher than
 // a migration copy.
-func (i *Importer) importTable(ctx context.Context, sourceSchema, table, objectType string) (imported, skipped int64, err error) {
+func (i *Importer) importTable(ctx context.Context, sourceSchema, table string, objectType stripeapi.ObjectType) (imported, skipped int64, err error) {
 	target, ok := mirror.Table(objectType)
 	if !ok {
 		return 0, 0, fmt.Errorf("no mirror table for %s", objectType)
@@ -186,7 +186,7 @@ func (i *Importer) importTable(ctx context.Context, sourceSchema, table, objectT
 // pipeline bookkeeping stripped, timestamp-typed epoch fields converted
 // back to the integers Stripe speaks, and the object field stamped. It
 // also reports whether the table carries sync-engine's deleted marker.
-func reconstructionExpr(ctx context.Context, tx pgx.Tx, sourceSchema, table, objectType string) (expr string, hasDeleted bool, err error) {
+func reconstructionExpr(ctx context.Context, tx pgx.Tx, sourceSchema, table string, objectType stripeapi.ObjectType) (expr string, hasDeleted bool, err error) {
 	rows, err := tx.Query(ctx, `
 		SELECT column_name, data_type FROM information_schema.columns
 		WHERE table_schema = $1 AND table_name = $2`, sourceSchema, table)

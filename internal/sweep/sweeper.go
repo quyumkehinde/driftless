@@ -244,7 +244,7 @@ func (s *Sweeper) recordIfMissing(ctx context.Context, sweepID int64, raw json.R
 			EventID:  event.ID,
 			Type:     event.Type,
 			Created:  time.Unix(event.Created, 0).UTC(),
-			Source:   mirror.EventSourceSweep,
+			Source:   string(mirror.EventSourceSweep),
 			Payload:  []byte(raw),
 			Livemode: event.Livemode,
 		}
@@ -278,7 +278,7 @@ func (s *Sweeper) recordIfMissing(ctx context.Context, sweepID int64, raw json.R
 		}
 		created := time.Unix(event.Created, 0).UTC()
 		_, _, err = s.queue.Enqueue(ctx, tx, queue.EnqueueParams{
-			ObjectType:   target.ObjectType,
+			ObjectType:   string(target.ObjectType),
 			ObjectID:     target.ObjectID,
 			EventID:      event.ID,
 			EventCreated: created,

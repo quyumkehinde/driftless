@@ -161,10 +161,10 @@ func parseSince(raw string) (time.Time, error) {
 
 // normalizeObjectType accepts the documented plural spellings alongside the
 // canonical singular ones.
-func normalizeObjectType(raw string) (string, error) {
+func normalizeObjectType(raw string) (stripeapi.ObjectType, error) {
 	candidate := strings.TrimSpace(raw)
 	for _, objectType := range stripeapi.AllObjectTypes {
-		if candidate == objectType || candidate == objectType+"s" {
+		if candidate == string(objectType) || candidate == string(objectType)+"s" {
 			return objectType, nil
 		}
 	}
@@ -190,7 +190,7 @@ func newBackfillRunner(cmd *cobra.Command, cfg *config.Config, pool *pgxpool.Poo
 		return nil, err
 	}
 	return backfill.NewRunner(pool, client, logger, nil,
-		func(objectType string, pages, objects int64) {
+		func(objectType stripeapi.ObjectType, pages, objects int64) {
 			cmd.Printf("%-18s pages=%-5d objects=%d\n", objectType, pages, objects)
 		}), nil
 }

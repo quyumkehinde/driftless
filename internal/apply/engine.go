@@ -45,7 +45,7 @@ func NewMetrics(reg *prometheus.Registry) *Metrics {
 type Engine struct {
 	pool        *pgxpool.Pool
 	client      *stripeapi.Client
-	payloadMode map[string]bool
+	payloadMode map[stripeapi.ObjectType]bool
 	logger      *slog.Logger
 	metrics     *Metrics
 }
@@ -53,9 +53,9 @@ type Engine struct {
 // NewEngine wires the apply engine. payloadModeTypes lists the object
 // types that apply from event payloads; metrics may be nil.
 func NewEngine(pool *pgxpool.Pool, client *stripeapi.Client, payloadModeTypes []string, logger *slog.Logger, metrics *Metrics) *Engine {
-	payloadMode := make(map[string]bool, len(payloadModeTypes))
+	payloadMode := make(map[stripeapi.ObjectType]bool, len(payloadModeTypes))
 	for _, objectType := range payloadModeTypes {
-		payloadMode[objectType] = true
+		payloadMode[stripeapi.ObjectType(objectType)] = true
 	}
 	return &Engine{
 		pool:        pool,
@@ -72,12 +72,13 @@ func NewEngine(pool *pgxpool.Pool, client *stripeapi.Client, payloadModeTypes []
 // job re-runs idempotently.
 func (e *Engine) Apply(ctx context.Context, job queue.Job) error {
 	start := time.Now()
+	objectType := stripeapi.ObjectType(job.ObjectType)
 	mode := mirror.SyncSourceFetch
-	if e.payloadMode[job.ObjectType] {
+	if e.payloadMode[objectType] {
 		mode = mirror.SyncSourcePayload
 	}
 	err := pgx.BeginFunc(ctx, e.pool, func(tx pgx.Tx) error {
-		if err := mirror.LockObject(ctx, tx, job.ObjectType, job.ObjectID); err != nil {
+		if err := mirror.LockObject(ctx, tx, objectType, job.ObjectID); err != nil {
 			return err
 		}
 		if err := e.applyLocked(ctx, tx, job); err != nil {
@@ -93,14 +94,14 @@ func (e *Engine) Apply(ctx context.Context, job queue.Job) error {
 	var fetchFailure *fetchError
 	if errors.As(err, &fetchFailure) {
 		if _, bumpErr := db.New(e.pool).BumpFetchFailures(ctx, db.BumpFetchFailuresParams{
-			ObjectType: job.ObjectType, ObjectID: job.ObjectID,
+			ObjectType: string(objectType), ObjectID: job.ObjectID,
 		}); bumpErr != nil {
 			e.logger.Warn("recording fetch failure failed", "error", bumpErr)
 		}
 		err = fetchFailure.err
 	}
 	if e.metrics != nil {
-		e.metrics.ApplySeconds.WithLabelValues(mode).Observe(time.Since(start).Seconds())
+		e.metrics.ApplySeconds.WithLabelValues(string(mode)).Observe(time.Since(start).Seconds())
 	}
 	return err
 }
@@ -115,6 +116,7 @@ func (e *fetchError) Error() string { return e.err.Error() }
 func (e *fetchError) Unwrap() error { return e.err }
 
 func (e *Engine) applyLocked(ctx context.Context, tx pgx.Tx, job queue.Job) error {
+	objectType := stripeapi.ObjectType(job.ObjectType)
 	q := db.New(tx)
 
 	var eventPayload []byte
@@ -132,11 +134,11 @@ func (e *Engine) applyLocked(ctx context.Context, tx pgx.Tx, job queue.Job) erro
 		return e.finishSoftDelete(ctx, tx, job)
 	}
 
-	if e.payloadMode[job.ObjectType] && eventPayload != nil {
+	if e.payloadMode[objectType] && eventPayload != nil {
 		return e.applyPayload(ctx, tx, job, eventPayload)
 	}
 
-	raw, err := e.client.GetObject(ctx, stripeapi.PriorityWebhook, job.ObjectType, job.ObjectID)
+	raw, err := e.client.GetObject(ctx, stripeapi.PriorityWebhook, objectType, job.ObjectID)
 	var notFound *stripeapi.NotFoundError
 	if errors.As(err, &notFound) {
 		// The object is gone upstream: the truth is a soft delete.
@@ -151,40 +153,40 @@ func (e *Engine) applyLocked(ctx context.Context, tx pgx.Tx, job queue.Job) erro
 		return e.finishSoftDelete(ctx, tx, job)
 	}
 
-	if job.ObjectType == stripeapi.ObjectSubscription {
+	if objectType == stripeapi.ObjectSubscription {
 		if err := e.upsertSubscription(ctx, tx, job.ObjectID, raw); err != nil {
 			return err
 		}
-	} else if err := mirror.UpsertObject(ctx, tx, job.ObjectType, job.ObjectID, raw); err != nil {
+	} else if err := mirror.UpsertObject(ctx, tx, objectType, job.ObjectID, raw); err != nil {
 		return err
 	}
 	return e.finishApplied(ctx, tx, job, mirror.SyncSourceFetch)
 }
 
 // finishApplied records bookkeeping for a successful upsert.
-func (e *Engine) finishApplied(ctx context.Context, tx pgx.Tx, job queue.Job, syncSource string) error {
+func (e *Engine) finishApplied(ctx context.Context, tx pgx.Tx, job queue.Job, syncSource mirror.SyncSource) error {
 	if err := e.recordState(ctx, tx, job, syncSource); err != nil {
 		return err
 	}
-	return mirror.NotifyChange(ctx, tx, job.ObjectType, job.ObjectID)
+	return mirror.NotifyChange(ctx, tx, stripeapi.ObjectType(job.ObjectType), job.ObjectID)
 }
 
 // finishSoftDelete soft-deletes the object and records bookkeeping.
 func (e *Engine) finishSoftDelete(ctx context.Context, tx pgx.Tx, job queue.Job) error {
-	if err := mirror.SoftDeleteObject(ctx, tx, job.ObjectType, job.ObjectID); err != nil {
+	if err := mirror.SoftDeleteObject(ctx, tx, stripeapi.ObjectType(job.ObjectType), job.ObjectID); err != nil {
 		return err
 	}
 	return e.finishApplied(ctx, tx, job, mirror.SyncSourceFetch)
 }
 
-func (e *Engine) recordState(ctx context.Context, tx pgx.Tx, job queue.Job, syncSource string) error {
+func (e *Engine) recordState(ctx context.Context, tx pgx.Tx, job queue.Job, syncSource mirror.SyncSource) error {
 	q := db.New(tx)
 	if err := q.UpsertObjectState(ctx, db.UpsertObjectStateParams{
 		ObjectType:       job.ObjectType,
 		ObjectID:         job.ObjectID,
 		LastEventCreated: job.LatestEventCreated,
 		LastEventID:      job.LatestEventID,
-		SyncSource:       syncSource,
+		SyncSource:       string(syncSource),
 	}); err != nil {
 		return err
 	}

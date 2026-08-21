@@ -62,7 +62,7 @@ func newVerifyCmd(flags *rootFlags) *cobra.Command {
 
 			var progress verify.Progress
 			if format == "table" {
-				progress = func(objectType string, checked, drifted int) {
+				progress = func(objectType stripeapi.ObjectType, checked, drifted int) {
 					cmd.Printf("%-18s checked=%-6d drifted=%d\n", objectType, checked, drifted)
 				}
 			}

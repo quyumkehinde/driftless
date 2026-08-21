@@ -15,8 +15,8 @@ import (
 // client's own collection table so the double's routes cannot drift from
 // the paths production code requests. Checkout sessions live under a
 // two-segment path and are routed explicitly.
-var pluralPaths = func() map[string]string {
-	paths := make(map[string]string, len(stripeapi.AllObjectTypes))
+var pluralPaths = func() map[string]stripeapi.ObjectType {
+	paths := make(map[string]stripeapi.ObjectType, len(stripeapi.AllObjectTypes))
 	for _, objectType := range stripeapi.AllObjectTypes {
 		path, ok := stripeapi.CollectionPath(objectType)
 		if !ok || objectType == stripeapi.ObjectCheckoutSession {
@@ -75,7 +75,7 @@ func (s *Server) handleAccount(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, map[string]any{"id": AccountID, "object": "account"})
 }
 
-func (s *Server) handleGet(w http.ResponseWriter, objectType, id string) {
+func (s *Server) handleGet(w http.ResponseWriter, objectType stripeapi.ObjectType, id string) {
 	s.mu.Lock()
 	obj, ok := s.objects[objectType][id]
 	s.mu.Unlock()
@@ -99,7 +99,7 @@ type filter struct {
 // handleList serves cursor pagination the way Stripe does: insertion order
 // reversed (newest first), limit, starting_after, field filters, and
 // created bounds.
-func (s *Server) handleList(w http.ResponseWriter, r *http.Request, objectType string, extra ...filter) {
+func (s *Server) handleList(w http.ResponseWriter, r *http.Request, objectType stripeapi.ObjectType, extra ...filter) {
 	gte, lte := createdBounds(r)
 	filters := make(map[string]string, len(listFilterKeys)+len(extra))
 	for _, key := range listFilterKeys {
