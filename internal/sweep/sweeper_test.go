@@ -159,9 +159,10 @@ func TestSweepUnknownEventTypeStoredWithoutJob(t *testing.T) {
 	base := time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC)
 	sweeper.now = func() time.Time { return base }
 
-	// generate an event whose type the contract does not map; the types
-	// filter would normally exclude it upstream, but a family wildcard can
-	// still surface unmapped members, like an unknown checkout session type
+	// the types filter is exact (GET /v1/events rejects wildcards), so a
+	// family member the contract does not map is invisible to the sweep;
+	// unknown types are the webhook path's problem. The walk must neither
+	// gap-record nor enqueue it.
 	fs.Put("subscription", "sub_x", map[string]any{
 		"customer": "cus_1", "status": "active",
 		"items": map[string]any{"data": []any{}, "has_more": false},
@@ -171,14 +172,13 @@ func TestSweepUnknownEventTypeStoredWithoutJob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.GapsFound != 1 {
-		t.Fatalf("gaps = %d, want 1", result.GapsFound)
+	if result.GapsFound != 0 {
+		t.Fatalf("gaps = %d, want 0", result.GapsFound)
 	}
-	// mapped family: a job is enqueued; the event is stored either way
 	var stored int
 	_ = pool.QueryRow(ctx, `SELECT count(*) FROM driftless.events WHERE source = 'sweep'`).Scan(&stored)
-	if stored != 1 {
-		t.Errorf("stored = %d, want 1", stored)
+	if stored != 0 {
+		t.Errorf("stored = %d, want 0", stored)
 	}
 }
 

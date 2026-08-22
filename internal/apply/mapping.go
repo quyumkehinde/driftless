@@ -60,31 +60,54 @@ var exactTypes = map[string]stripeapi.ObjectType{
 	"refund.failed":  stripeapi.ObjectRefund,
 }
 
-// prefixFamilies covers the families the contract defines with a wildcard.
+// prefixFamilies covers the event families the contract matches by prefix.
 // Order matters: charge.dispute. must be consulted while bare charge events
 // resolve through exactTypes only.
 var prefixFamilies = []struct {
 	prefix     string
 	objectType stripeapi.ObjectType
+	events     []string
 }{
-	{"customer.subscription.", stripeapi.ObjectSubscription},
-	{"invoice.", stripeapi.ObjectInvoice},
-	{"charge.dispute.", stripeapi.ObjectDispute},
-	{"payment_intent.", stripeapi.ObjectPaymentIntent},
-	{"setup_intent.", stripeapi.ObjectSetupIntent},
+	{"customer.subscription.", stripeapi.ObjectSubscription, []string{
+		"customer.subscription.created", "customer.subscription.deleted",
+		"customer.subscription.paused", "customer.subscription.resumed",
+		"customer.subscription.trial_will_end", "customer.subscription.updated",
+	}},
+	{"invoice.", stripeapi.ObjectInvoice, []string{
+		"invoice.created", "invoice.deleted", "invoice.finalized",
+		"invoice.marked_uncollectible", "invoice.paid",
+		"invoice.payment_action_required", "invoice.payment_failed",
+		"invoice.payment_succeeded", "invoice.sent", "invoice.updated",
+		"invoice.voided",
+	}},
+	{"charge.dispute.", stripeapi.ObjectDispute, []string{
+		"charge.dispute.closed", "charge.dispute.created",
+		"charge.dispute.funds_reinstated", "charge.dispute.funds_withdrawn",
+		"charge.dispute.updated",
+	}},
+	{"payment_intent.", stripeapi.ObjectPaymentIntent, []string{
+		"payment_intent.amount_capturable_updated", "payment_intent.canceled",
+		"payment_intent.created", "payment_intent.partially_funded",
+		"payment_intent.payment_failed", "payment_intent.processing",
+		"payment_intent.requires_action", "payment_intent.succeeded",
+	}},
+	{"setup_intent.", stripeapi.ObjectSetupIntent, []string{
+		"setup_intent.canceled", "setup_intent.created",
+		"setup_intent.requires_action", "setup_intent.setup_failed",
+		"setup_intent.succeeded",
+	}},
 }
 
-// SubscribedEventTypes returns the event type patterns the contract
-// covers, exact types plus wildcard families, in the shape the events API
-// types filter accepts. The webhook endpoint instructions and the gap
-// sweeper's filter both come from here so they can never diverge.
+// SubscribedEventTypes returns the exact event types the contract covers,
+// sorted, the shape GET /v1/events types[] accepts. Webhook endpoint
+// registration may keep using wildcards; the sweeper must use this.
 func SubscribedEventTypes() []string {
-	patterns := make([]string, 0, len(exactTypes)+len(prefixFamilies))
+	patterns := make([]string, 0, len(exactTypes))
 	for eventType := range exactTypes {
 		patterns = append(patterns, eventType)
 	}
 	for _, family := range prefixFamilies {
-		patterns = append(patterns, family.prefix+"*")
+		patterns = append(patterns, family.events...)
 	}
 	slices.Sort(patterns)
 	return patterns

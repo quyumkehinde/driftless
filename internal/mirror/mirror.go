@@ -14,8 +14,7 @@ import (
 )
 
 // SyncSource is the object_state.sync_source value; fetch and payload
-// double as the apply-mode metric label. Repair arrives with verify,
-// import with the sync-engine importer.
+// double as the apply-mode metric label.
 type SyncSource string
 
 const (
@@ -27,8 +26,7 @@ const (
 )
 
 // EventSource is the events.source value, matching the schema's CHECK
-// constraint. The two writers, ingest and the sweeper, must agree with
-// the schema here.
+// constraint.
 type EventSource string
 
 const (

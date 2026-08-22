@@ -2,6 +2,7 @@ package apply
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/quyumkehinde/driftless/internal/stripeapi"
@@ -150,6 +151,20 @@ func TestResolveEvent(t *testing.T) {
 			t.Errorf("ok=%v err=%v, want ok=true with error", ok, err)
 		}
 	})
+}
+
+// TestSweepEventTypesAreStripeCompatible guards the sweeper's events-list
+// filter: GET /v1/events types[] rejects wildcards, so every pattern the
+// sweeper sends must be an exact type name that ResolveType maps.
+func TestSweepEventTypesAreStripeCompatible(t *testing.T) {
+	for _, eventType := range SubscribedEventTypes() {
+		if strings.Contains(eventType, "*") {
+			t.Errorf("SubscribedEventTypes() = %q: wildcard patterns are rejected by GET /v1/events", eventType)
+		}
+		if _, ok := ResolveType(eventType); !ok {
+			t.Errorf("SubscribedEventTypes() = %q: not resolvable to an object type", eventType)
+		}
+	}
 }
 
 // TestMappingTargetsAreCanonical asserts every object type the event
