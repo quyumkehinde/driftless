@@ -17,6 +17,7 @@ import (
 // double as the apply-mode metric label.
 type SyncSource string
 
+// The sync_source values.
 const (
 	SyncSourceFetch    SyncSource = "fetch"
 	SyncSourcePayload  SyncSource = "payload"
@@ -29,6 +30,7 @@ const (
 // constraint.
 type EventSource string
 
+// The event source values.
 const (
 	EventSourceWebhook EventSource = "webhook"
 	EventSourceSweep   EventSource = "sweep"
