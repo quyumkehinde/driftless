@@ -79,4 +79,4 @@ changelog:
 
 release:
   draft: false
-  prerelease: true
+  prerelease: auto
