@@ -18,6 +18,15 @@ spec:
       labels:
         app: driftless
     spec:
+      initContainers:
+        # the image ships no shell, so this is a plain command, not a
+        # retry loop; kube restarts the pod until postgres accepts it
+        - name: migrate
+          image: ghcr.io/quyumkehinde/driftless:latest
+          args: ["migrate", "up"]
+          envFrom:
+            - secretRef:
+                name: driftless
       containers:
         - name: driftless
           image: ghcr.io/quyumkehinde/driftless:latest
