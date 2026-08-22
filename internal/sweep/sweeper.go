@@ -174,17 +174,46 @@ func (s *Sweeper) window(ctx context.Context) (from, to time.Time, err error) {
 	return from, to, nil
 }
 
+// maxTypeFilters is Stripe's cap on values per types[] parameter; larger
+// filters are rejected with a 400.
+const maxTypeFilters = 20
+
+// chunkTypes splits types into consecutive groups of at most size.
+func chunkTypes(types []string, size int) [][]string {
+	var chunks [][]string
+	for start := 0; start < len(types); start += size {
+		end := min(start+size, len(types))
+		chunks = append(chunks, types[start:end])
+	}
+	return chunks
+}
+
 // walk pages the events list newest to oldest across the window, storing
-// and enqueueing every event never seen before.
+// and enqueueing every event never seen before. The type filter exceeds
+// Stripe's per-request cap, so it is chunked into one paginated walk each.
 func (s *Sweeper) walk(ctx context.Context, sweepID int64, from, to time.Time) (Result, error) {
+	var result Result
+	for _, group := range chunkTypes(apply.SubscribedEventTypes(), maxTypeFilters) {
+		seen, err := s.walkTypes(ctx, sweepID, from, to, group)
+		if err != nil {
+			return result, err
+		}
+		result.EventsSeen += seen.EventsSeen
+		result.GapsFound += seen.GapsFound
+	}
+	return result, nil
+}
+
+// walkTypes runs one chunk's paginated pass over the window.
+func (s *Sweeper) walkTypes(ctx context.Context, sweepID int64, from, to time.Time, types []string) (Result, error) {
 	var result Result
 	query := url.Values{
 		"limit":        {strconv.Itoa(stripeapi.MaxPageLimit)},
 		"created[gte]": {strconv.FormatInt(from.Unix(), 10)},
 		"created[lte]": {strconv.FormatInt(to.Unix(), 10)},
 	}
-	for _, pattern := range apply.SubscribedEventTypes() {
-		query.Add("types[]", pattern)
+	for _, eventType := range types {
+		query.Add("types[]", eventType)
 	}
 
 	var cursor string

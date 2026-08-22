@@ -3,12 +3,14 @@ package sweep
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/quyumkehinde/driftless/internal/apply"
 	"github.com/quyumkehinde/driftless/internal/fakestripe"
 	"github.com/quyumkehinde/driftless/internal/queue"
 	"github.com/quyumkehinde/driftless/internal/stripeapi"
@@ -225,5 +227,27 @@ func TestSweepDeliveryOutageCritical(t *testing.T) {
 	logs := logBuf.String()
 	if !strings.Contains(logs, `"critical":true`) || !strings.Contains(logs, "none are arriving") {
 		t.Errorf("expected none-arriving critical log, got:\n%s", logs)
+	}
+}
+
+// TestSweepTypeFilterChunksStayUnderStripeCap pins the events-API
+// constraint: real Stripe rejects types[] requests with more than 20
+// values, so the sweeper's chunks must never exceed the cap and must
+// cover every subscribed type exactly once.
+func TestSweepTypeFilterChunksStayUnderStripeCap(t *testing.T) {
+	subscribed := apply.SubscribedEventTypes()
+	chunks := chunkTypes(subscribed, maxTypeFilters)
+	if len(chunks) == 0 {
+		t.Fatal("chunkTypes produced no chunks")
+	}
+	var flattened []string
+	for i, chunk := range chunks {
+		if len(chunk) > maxTypeFilters {
+			t.Errorf("chunk %d has %d types, cap is %d", i, len(chunk), maxTypeFilters)
+		}
+		flattened = append(flattened, chunk...)
+	}
+	if !slices.Equal(flattened, subscribed) {
+		t.Error("chunks must cover every subscribed type exactly once, in order")
 	}
 }

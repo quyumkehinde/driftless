@@ -29,6 +29,9 @@ var pluralPaths = func() map[string]stripeapi.ObjectType {
 
 const defaultPageLimit = 10
 
+// maxEventTypeFilters mirrors the real events API's cap on types[] values.
+const maxEventTypeFilters = 20
+
 func (s *Server) apiHandler() http.Handler {
 	mux := s.apiRoutes()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -182,10 +185,15 @@ func matchesTypePatterns(eventType string, patterns []string) bool {
 }
 
 // handleEvents serves the event log newest first with created and type
-// filters.
+// filters. Like the real API, it rejects more than 20 types[] values.
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	gte, lte := createdBounds(r)
 	patterns := r.URL.Query()["types[]"]
+	if len(patterns) > maxEventTypeFilters {
+		writeError(w, http.StatusBadRequest,
+			"You may only specify up to '20' values in the 'types' parameter.")
+		return
+	}
 
 	s.mu.Lock()
 	events := make([]json.RawMessage, 0, len(s.events))
