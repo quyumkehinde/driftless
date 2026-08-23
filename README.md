@@ -14,8 +14,7 @@ Ten minutes from zero to a proven-correct mirror. You need Postgres 17+, a Strip
 
 ```bash
 # 1. Install: one static binary, no runtime
-#    https://github.com/quyumkehinde/driftless/releases
-tar xzf driftless_*.tar.gz && sudo install driftless /usr/local/bin/
+curl -fsSL https://raw.githubusercontent.com/quyumkehinde/driftless/main/scripts/install.sh | sh
 
 # 2. Point it at your Postgres and your Stripe account
 export DRIFTLESS_DATABASE_URL='postgres://...'
