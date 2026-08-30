@@ -228,7 +228,7 @@ Stripe only. Self-hosted only. Postgres only. No Stripe Connect yet (single-acco
 
 ## Status
 
-Release candidate. The chaos suite (crash-kill during load, backfill kill -9 and resume, 429 storms, delivered-shuffled-and-duplicated convergence) runs green under `-race` in CI. v1.0.0 follows a soak period on live accounts.
+Stable. The chaos suite (crash-kill during load, backfill kill -9 and resume, 429 storms, delivered-shuffled-and-duplicated convergence) runs green under `-race` in CI.
 
 ## License
 
