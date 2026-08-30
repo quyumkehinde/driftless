@@ -208,9 +208,9 @@ The output names the exact objects and the kind of divergence.
 |---|---|---|---|---|
 | Webhook receive + signature check | yes | yes | yes | no |
 | Guaranteed dedupe | yes | partial | best-effort | n/a |
-| Out-of-order and same-second safe | yes | no | no | n/a |
+| Out-of-order and same-second safe | yes | [known open issue](https://github.com/stripe/sync-engine/issues/268) | no | n/a |
 | Detects never-delivered events | yes | no | no | no |
-| Resumable backfill incl. canceled subs | yes | no | no | polling sync |
+| Resumable backfill incl. canceled subs | yes | [known open issue](https://github.com/stripe/sync-engine/issues/336) | no | polling sync |
 | Reconciliation proof | `verify`, exit-code contract | no | no | no |
 | Where your data lives | your Postgres | your Postgres | their cloud, then yours | your warehouse, hours later |
 
